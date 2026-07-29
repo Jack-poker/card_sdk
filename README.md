@@ -1,5 +1,5 @@
 
-#### A software development tool and cli tool at the same time !, help you generate cards easly
+
 <img width="785" height="617" alt="image" src="https://github.com/user-attachments/assets/d954da14-61f5-4587-96f9-c023c3339ad5" />
 
 ### Installation
