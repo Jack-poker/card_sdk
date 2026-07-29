@@ -10,6 +10,6 @@ whl file is provided in this repository.
 #### sample output:
 
 #### front:
-<img width="466" height="296" alt="image" src="https://github.com/user-attachments/assets/3c5eac9b-7fbb-4370-91db-a3d2d750485b" />   
+<img width="466" height="296" alt="image" src="https://github.com/user-attachments/assets/3c5eac9b-7fbb-4370-91db-a3d2d750485b" />  . 
 #### back:
 <img width="466" height="296" alt="image" src="https://github.com/user-attachments/assets/a788e8e2-4f56-4252-8cbf-30e95050fb55" />
