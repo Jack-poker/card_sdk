@@ -200,7 +200,8 @@ Or batch, any hex you know the template uses:
 ```python
 await multiple_cards("BANK_INSPIRE", data_url=..., color="#123456",
                      accent_color="#9c27b0", side_2_color="#222222",
-                     color_overrides={"#999999": "#333333"})
+                     color_overrides={"#999999": "#333333"},
+                     colors={"gray": "#555555", "text_body": "#111111"})
 ```
 
 For pixel-level control there is a generic override map — keys are either a
@@ -212,6 +213,28 @@ student.color = "#c00000"
 student.side_2_color = "#004000"
 student.color_overrides = {"#28220b": "#111111"}   # literal hex swap
 ```
+
+### Every color is a variable (full color map)
+
+Every colored element of a template is a **named color variable** whose default
+is the color already on the template — `primary`, `background`, `accent`,
+`panel`, `text_head`, `text_body`, `black`, `gray`, `white`… Ask the SDK which
+ones the template defines:
+
+```python
+from card_sdk.card import get_template_colors
+
+colors = get_template_colors("BANK_INSPIRE")
+print(colors)
+# {'primary': '#0000ff', 'accent': '#2eb1ff', 'background': '#f9f9f9',
+#  'back_bg': '#f9f9f9', 'text_body': '#1a1a1a', 'white': '#ffffff', ...}
+
+config = CardConfig(template_name="BANK_INSPIRE", ...,
+                    colors={**colors, "primary": "#c00000", "gray": "#555555"})
+```
+
+Pass `None` / omit a role and the template's own color is kept — so
+`colors=get_template_colors(t)` reproduces the template exactly.
 
 ## 5. Batch generation — many cards (requires the API key)
 
