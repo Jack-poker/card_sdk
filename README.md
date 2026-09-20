@@ -142,9 +142,13 @@ conversion in the driver.
 ```python
 # Off by default — flip it on for print runs
 from card_sdk.card import set_print_cmyk, get_print_cmyk, convert_pdf_to_cmyk
+from card_sdk.card_agent import Card
 
 set_print_cmyk(True)
 print(get_print_cmyk())            # True → every saved card PDF is CMYK
+
+# ...or pass it straight to the agent for one run
+asyncio.run(Card.agent(data=student, print_cmyk=True))
 ```
 
 ```bash
@@ -170,7 +174,8 @@ handshake):
 import asyncio
 from card_sdk.card_agent import Card
 
-asyncio.run(Card.agent(data=config.to_student()))   # SINGLE → MULTIPLE prompt
+asyncio.run(Card.agent(data=config.to_student()))            # SINGLE → MULTIPLE prompt
+asyncio.run(Card.agent(data=config.to_student(), print_cmyk=True))  # + CMYK print colors
 # or interactive:  asyncio.run(Card.agent())
 ```
 
