@@ -23,17 +23,21 @@ pip install "https://github.com/Jack-poker/card_sdk/raw/main/card_agent_sdk-0.1.
 
 Python 3.10+. All dependencies resolve automatically.
 
-## 2. Set your API user key (so the SDK can talk to the Kaascan admin API)
+## 2. Set your API user key (only needed for MULTIPLE mode)
 
-The SDK ships **without** a hard-coded key. For non-interactive (clean) integration,
-set it from your environment — no QR handshake needed:
+**SINGLE card generation never needs a key** — it renders locally from your
+template and student data. Only **MULTIPLE** (batch) mode pulls students from
+the Kaascan admin API, so that is the path that requires the API user key.
+
+For clean, non-interactive batch runs, set it from your environment — no QR
+handshake needed:
 
 ```bash
 export KAA_SCAN_API_KEY="<your-admin-api-key>"
 ```
 
-When unset, the SDK prints a QR code and awaits a `POST /auth` from your web
-service before authorizing card generation. See **§6** for the handshake.
+When unset, MULTIPLE mode prints a QR code and awaits a `POST /auth` from your
+web service before authorizing. See **§6** for the handshake.
 
 ## 3. Minimal integration — one card, one call
 
@@ -57,6 +61,7 @@ print(result)   # "(completed output folder) : .../output/"
 
 The final PDF is written to
 `output/<school_name>/<student_class>/final_student_card_<student_id>.pdf`.
+SINGLE generation requires **no API key**.
 
 ## 4. Structured integration — `CardConfig`
 
@@ -98,10 +103,12 @@ The barcode always carries the **digits** of `student_code` — if you supply a
 malformed one it is regenerated automatically. A card carrying a barcode does
 not need `data_qrcode` (and vice-versa).
 
-## 5. Batch generation — many cards
+## 5. Batch generation — many cards (requires the API key)
 
-`Card.agent()` authenticates the API user, then pulls the student list for a
-school from the Kaascan admin API and renders cards with process pooling:
+`Card.agent()` then pulls the student list for a school from the Kaascan admin
+API and renders cards with process pooling. Because it calls the admin API,
+**MULTIPLE mode requires the API user key** (`KAA_SCAN_API_KEY` or the QR
+handshake):
 
 ```python
 import asyncio
@@ -111,7 +118,10 @@ asyncio.run(Card.agent(data=config.to_student()))   # SINGLE → MULTIPLE prompt
 # or interactive:  asyncio.run(Card.agent())
 ```
 
-## 6. API-user auth handshake (when `KAA_SCAN_API_KEY` is not set)
+## 6. API-user auth handshake (MULTIPLE mode only)
+
+The handshake runs **only when MULTIPLE mode is chosen and**
+`KAA_SCAN_API_KEY` is not set. SINGLE mode never starts it.
 
 1. The SDK starts a local server (`POST /auth`, default port `8132`) and prints a
    **QR code** + endpoint in the terminal.
@@ -129,7 +139,7 @@ and used as the `X-API-KEY` header on every admin call.
 
 | Env var            | Default   | Purpose                                    |
 |--------------------|-----------|--------------------------------------------|
-| `KAA_SCAN_API_KEY` | *(unset)* | Skips the handshake — recommended for CI   |
+| `KAA_SCAN_API_KEY` | *(unset)* | MULTIPLE-mode key — skips the handshake (recommended for CI) |
 | `KAA_AUTH_HOST`    | `0.0.0.0` | Auth endpoint bind host                    |
 | `KAA_AUTH_PORT`    | `8132`    | Auth endpoint port (free port if busy)     |
 | `KAA_AUTH_TIMEOUT` | `180`     | Seconds to wait for the WS before giving up |
