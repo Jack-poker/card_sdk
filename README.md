@@ -23,6 +23,17 @@ pip install "https://github.com/Jack-poker/card_sdk/raw/main/card_agent_sdk-0.1.
 
 Python 3.10+. All dependencies resolve automatically.
 
+> **Windows / platform support — the `svg2pdf-py` renderer.**
+> Cards are drawn to vector PDFs by `svg2pdf-py==1.1.0`, which ships wheels
+> **only** for: Windows **x64**, macOS **arm64**, and Linux `manylinux_2_35_x86_64`
+> (glibc ≥ 2.35 — e.g. Ubuntu 22.04+). It has **no source distribution**.
+> - On Windows use the **64-bit** Python installer (`python.org` default is 64-bit;
+>   the **32-bit** installer fails at install with
+>   `Could not find a version that satisfies the requirement svg2pdf-py==1.1.0`).
+> - Python 3.11+ recommended (the wheel is `abi3`, works on 3.11–3.13).
+> - Windows ARM64, Intel Mac, Alpine/musl and pre-2022 Linux are **not** covered
+>   by a wheel.
+
 ## 2. Set your API user key (only needed for MULTIPLE mode)
 
 **SINGLE card generation never needs a key** — it renders locally from your
