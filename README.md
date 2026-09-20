@@ -163,6 +163,56 @@ You can also convert an already-generated PDF manually:
 convert_pdf_to_cmyk("output/SCHOOL/CLASS/final_student_card_S-2026-001.pdf")
 ```
 
+## Recolor the cards
+
+Every template ships with its own colors, but you can recolor it per card
+without touching the design. Colors that a template doesn't define are simply
+ignored — so the safest overrides are `color` (primary), `side_2_color`
+(back), `background_color` (card body) and `accent_color` (secondary accent).
+
+```python
+# Single card — recolor the built-in BLUE_TOPBAR_CARD
+content = generate_card(
+    template_name="BLUE_TOPBAR_CARD",
+    image_base64=photo,
+    student_name="ALINE UWASE",
+    student_class="S1C",
+    school_name="KIZIGURO SECONDARY",
+    student_id="S-2026-001",
+    color="#c00000",               # primary / banner bar (default: template)
+    side_2_color="#004000",        # card back background
+    background_color="#101010",    # card front body
+)
+```
+
+SAME via the structured config or direct Student values:
+
+```python
+config = CardConfig(
+    template_name="BANK_INSPIRE", student_name="ALINE UWASE", ...,
+    color="#123456", accent_color="#9c27b0", side_2_color="#222222",
+)
+asyncio.run(Card.agent(data=config.to_student()))
+```
+
+Or batch, any hex you know the template uses:
+
+```python
+await multiple_cards("BANK_INSPIRE", data_url=..., color="#123456",
+                     accent_color="#9c27b0", side_2_color="#222222",
+                     color_overrides={"#999999": "#333333"})
+```
+
+For pixel-level control there is a generic override map — keys are either a
+role name or the exact hex already on the template:
+
+```python
+await Card.agent(data=student)  # colors ride along on the Student object
+student.color = "#c00000"
+student.side_2_color = "#004000"
+student.color_overrides = {"#28220b": "#111111"}   # literal hex swap
+```
+
 ## 5. Batch generation — many cards (requires the API key)
 
 `Card.agent()` then pulls the student list for a school from the Kaascan admin
