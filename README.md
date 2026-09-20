@@ -131,6 +131,34 @@ export KAA_OUTPUT_DIR=/srv/cards
 cd /my/project && python your_app.py
 ```
 
+## CMYK colors for physical printing
+
+Card PDFs are generated in **RGB** (screen colors), but print shops print in
+**CMYK**. Enable the print option and every final card PDF is rewritten with
+true 4-channel CMY+K colors (ICC SWOP profile, 4:4:4, 300 DPI by default), so
+the printer reproduces the card design as-is instead of guessing an RGB→CMYK
+conversion in the driver.
+
+```python
+# Off by default — flip it on for print runs
+from card_sdk.card import set_print_cmyk, get_print_cmyk, convert_pdf_to_cmyk
+
+set_print_cmyk(True)
+print(get_print_cmyk())            # True → every saved card PDF is CMYK
+```
+
+```bash
+# ...or via the environment (also used by MULTIPLE-mode worker processes)
+export KAA_PRINT_CMYK=true         # "true" | "1" | "yes" | "on"
+export KAA_PRINT_CMYK_DPI=300      # rasterization resolution (default 300)
+```
+
+You can also convert an already-generated PDF manually:
+
+```python
+convert_pdf_to_cmyk("output/SCHOOL/CLASS/final_student_card_S-2026-001.pdf")
+```
+
 ## 5. Batch generation — many cards (requires the API key)
 
 `Card.agent()` then pulls the student list for a school from the Kaascan admin
