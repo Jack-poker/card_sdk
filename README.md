@@ -103,6 +103,34 @@ The barcode always carries the **digits** of `student_code` — if you supply a
 malformed one it is regenerated automatically. A card carrying a barcode does
 not need `data_qrcode` (and vice-versa).
 
+## Where cards are written (output folder)
+
+Final PDFs land at `output/<school_name>/<student_class>/final_student_card_<id>.pdf`,
+with the **output root defaulting to the folder you are running the SDK from** —
+an installed package never writes into `site-packages`.
+
+Change it any of three ways:
+
+```python
+# 1) In code — absolute or relative (resolves against your working dir)
+from card_sdk.card import set_output_dir, get_output_dir
+
+set_output_dir("/srv/cards")          # PDFs → /srv/cards/<school>/<class>/...
+set_output_dir("generated")           # → ./generated/<school>/<class>/...
+set_output_dir(None)                  # reset to default ./output
+print(get_output_dir())               # read the resolved path
+```
+
+```bash
+# 2) Environment variable (also picked up by the batch worker processes)
+export KAA_OUTPUT_DIR=/srv/cards
+```
+
+```bash
+# 3) Default — just run from any folder; cards appear under ./output there
+cd /my/project && python your_app.py
+```
+
 ## 5. Batch generation — many cards (requires the API key)
 
 `Card.agent()` then pulls the student list for a school from the Kaascan admin
