@@ -17,8 +17,16 @@ installable wheel.
 
 ## 1. Install
 
+Prebuilt wheel (recommended — bundles the SVG renderer):
+
 ```bash
 pip install "https://github.com/Jack-poker/card_sdk/raw/main/card_agent_sdk-0.1.0-py3-none-any.whl"
+```
+
+Or install directly from source (builds via `pyproject.toml` on modern pip / Python 3.13+, e.g. Colab):
+
+```bash
+pip install "git+https://github.com/Jack-poker/card_sdk.git"
 ```
 
 Python 3.10+. All dependencies resolve automatically.
