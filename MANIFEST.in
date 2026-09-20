@@ -1,9 +1,0 @@
-include requirements.txt
-include README.md
-include setup.py
-graft docs
-
-global-exclude __pycache__
-global-exclude *.py[cod]
-global-exclude .env
-global-exclude *.pem
