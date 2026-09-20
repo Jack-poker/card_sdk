@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<inkscape-extension xmlns="http://www.inkscape.org/namespace/inkscape/extension">
+  <name>Kaascan: Load Template Design</name>
+  <id>org.kaascan.sdk.load_template</id>
+  <effect>
+    <object-type>document</object-type>
+    <effects-menu>
+      <submenu name="Kaascan SDK"/>
+    </effects-menu>
+    <menu-tip>Replace the current document with a saved front/back design from a Kaascan SDK template.</menu-tip>
+  </effect>
+  <script>
+    <command reldir="extensions" interpreter="python">kaascan_templates.py</command>
+  </script>
+  <param name="tab" type="notebook">
+    <page name="template" _gui-text="Template">
+      <param name="template" type="string" _gui-text="Template name" gui-description="Folder under card_sdk/templates/templates_base/.">BANK_INSPIRE</param>
+      <param name="side" type="optiongroup" appearance="radio" _gui-text="Card side">
+        <option value="front">Front (photo side)</option>
+        <option value="back">Back (barcode side)</option>
+      </param>
+      <param name="sdk_root" type="string" _gui-text="SDK repo folder" gui-description="Leave empty to auto-detect / reuse the folder from the last run."></param>
+    </page>
+  </param>
+  <param name="mode" type="string" gui-hidden="true">load</param>
+</inkscape-extension>

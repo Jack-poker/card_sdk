@@ -1,0 +1,46 @@
+# Kaascan SDK — ignore non-source / generated / environment files
+
+# Quarantined non-runtime files (build artifacts, separate projects, env, demo assets)
+draf/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# IDE / editor
+.vscode/
+.idea/
+.vce/
+.flet/
+*.swp
+
+# Runtime-generated (card output & reports are byproducts, not source)
+output/
+card_sdk/output/
+card_sdk/report/
+card_sdk/tmp/
+card_sdk/student_photos/
+
+# Runtime-generated template SVGs (written by save_card into card_sdk/templates/)
+card_sdk/templates/template_x00*.svg
+
+# Runtime template version snapshots (recreated by template_versioning commit/build)
+card_sdk/templates/templates_base/*/versions/
+
+# Secrets
+.env
+*.env
+!.env.example
+
+# OS
+.DS_Store
+Thumbs.db
+

@@ -1,0 +1,613 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Kaascan SDK — Developer Integration Guide</title>
+<style>
+  @font-face{
+    font-family:"Gravitype";
+    src:url("gravitype-minigap.otf") format("opentype");
+    font-display:swap;
+  }
+  :root{
+    /* Material for MkDocs style — codefly docs theme */
+    --primary:#0011ff;      /* kaascan teal */
+    --primary-dark:#0022ff;
+    --primary-light:#e0f2f1;
+    --bg:#ceddff;
+    --bg-alt:#f5f6f8;
+    --sidebar-bg:#0044ff1f;
+    --sidebar-fg:#00040a;
+    --text:#020100;
+    --heading:#100801;
+    --muted:#00070a;
+    --border:#e0e0e0;
+    --code-bg:#000000;
+    --code-fg:#eceff1;
+    --table-head:#f0f2f5;
+    --accent:#ef6c00;
+    --warn:#ef6c00;
+    --tip:#2e7d32;
+    --note:#1565c0;
+    --mono:"SFMono-Regular",Consolas,"Liberation Mono",Menlo,monospace;
+  }
+  *{box-sizing:border-box;margin:0;padding:0;}
+  html,body{height:100%;}
+  body{background:var(--bg);color:var(--text);font-family:"Gravitype",-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;line-height:1.7;font-size:16px;}
+
+  /* ---------- Header bar (top) ---------- */
+  .md-header{
+    background:var(--primary);color:#fff;position:sticky;top:0;z-index:20;
+    box-shadow:0 2px 4px rgba(0,0,0,.15);
+  }
+  .md-header-inner{max-width:1300px;margin:0 auto;padding:12px 24px;display:flex;align-items:center;gap:14px;}
+  .md-header .brand{font-weight:700;font-size:18px;letter-spacing:.3px;display:flex;align-items:center;gap:9px;}
+  .md-header .brand svg{width:20px;height:20px;}
+  .md-header .tagline{font-size:13px;opacity:.85;font-weight:400;}
+  .md-header .gh{color:#fff;text-decoration:none;font-size:13px;margin-left:auto;opacity:.9;}
+
+  /* ---------- Layout: sidebar + content ---------- */
+  .md-container{max-width:1300px;margin:0 auto;display:flex;min-height:calc(100vh - 60px);}
+  .md-sidebar{
+    width:260px;flex-shrink:0;background:var(--sidebar-bg);color:var(--sidebar-fg);
+    padding:26px 0 40px;height:calc(100vh - 60px);position:sticky;top:60px;overflow-y:auto;
+  }
+  .md-sidebar .nav-label{font-size:11px;text-transform:uppercase;letter-spacing:1px;color:#7a8591;padding:0 24px;margin-bottom:8px;}
+  .md-sidebar nav a{
+    display:block;color:var(--sidebar-fg);text-decoration:none;padding:8px 24px;font-size:14px;
+    border-left:3px solid transparent;transition:.15s;
+  }
+  .md-sidebar nav a:hover{background:rgba(255,255,255,.05);color:#fff;}
+  .md-sidebar nav a.active{background:rgba(12, 12, 12, 0.18);color:#f36d07;border-left-color:var(--accent);}
+  .md-sidebar .version{margin-top:24px;padding:12px 24px 0;border-top:1px solid #333b45;font-size:12px;color:#7a8591;}
+
+  .md-content{flex:1;min-width:0;padding:36px 52px 90px;}
+
+  /* ---------- Typography ---------- */
+  h1{font-size:34px;color:var(--heading);margin-bottom:10px;letter-spacing:-.3px;}
+  h2{font-size:25px;color:var(--heading);margin:46px 0 14px;padding-bottom:8px;border-bottom:2px solid var(--primary-light);letter-spacing:-.2px;}
+  h2:first-of-type{margin-top:6px;}
+  h3{font-size:18px;color:var(--primary-dark);margin:26px 0 10px;}
+  p{margin:14px 0;}
+  .lead{font-size:17px;color:var(--muted);max-width:720px;}
+  .muted{color:var(--muted);font-size:14px;}
+  a{color:var(--primary-dark);}
+  strong{color:var(--heading);}
+
+  /* ---------- Inline code ---------- */
+  code{font-family:var(--mono);}
+  :not(pre)>code{
+    background:var(--primary-light);color:var(--primary-dark);padding:2px 6px;border-radius:4px;
+    font-size:.86em;font-weight:600;
+  }
+
+  /* ---------- Code blocks (Material style with header bar) ---------- */
+  .highlight{position:relative;margin:18px 0;border-radius:8px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,.12);}
+  .highlight .langbar{
+    display:flex;align-items:center;justify-content:space-between;background:#1e242b;
+    padding:8px 14px;font-size:12px;color:#8b95a3;font-family:var(--mono);
+  }
+  .highlight .langbar .dots{display:flex;gap:6px;}
+  .highlight .langbar .dot{width:11px;height:11px;border-radius:50%;display:inline-block;}
+  .highlight .langbar .dot.r{background:#ff5f57;}.highlight .langbar .dot.y{background:#febc2e;}.highlight .langbar .dot.g{background:#28c840;}
+  .highlight .langbar .lang{margin-left:8px;}
+  .highlight .copy{
+    background:transparent;color:#8b95a3;border:1px solid #333b45;border-radius:4px;
+    font-size:11px;padding:3px 10px;cursor:pointer;font-family:var(--mono);transition:.15s;
+  }
+  .highlight .copy:hover{background:#2c333d;color:#fff;}
+  pre{background:var(--code-bg);color:var(--code-fg);overflow-x:auto;padding:16px 18px;font-size:13.5px;line-height:1.6;}
+  pre code{background:none;color:inherit;font-weight:400;}
+  .tok-cm{color:#8b95a3;font-style:italic;}
+  .tok-kw{color:#ff8400;font-weight:600;}
+  .tok-str{color:#bbf22f;}
+  .tok-fn{color:#0aa9f9;}
+  .tok-num{color:#f78c6c;}
+  .tok-var{color:#ffcb6b;}
+
+  /* ---------- Admonitions (Material style) ---------- */
+  .admonition{border-radius:6px;padding:14px 18px;margin:18px 0;border:1px solid;font-size:15px;}
+  .admonition .admo-title{font-weight:700;margin-bottom:4px;display:flex;gap:8px;align-items:center;}
+  .admonition.note{border-left:5px solid var(--note);background:#e8f1fd;border-color:#bcd4f7;}
+  .admonition.note .admo-title{color:var(--note);}
+  .admonition.tip{border-left:5px solid var(--tip);background:#eaf5ea;border-color:#c2e0c2;}
+  .admonition.tip .admo-title{color:var(--tip);}
+  .admonition.warning{border-left:5px solid var(--warn);background:#fdf0e4;border-color:#f4d0a8;}
+  .admonition.warning .admo-title{color:var(--warn);}
+
+  /* ---------- Feature cards grid (Material grid) ---------- */
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:18px;margin:22px 0;}
+  .card{
+    border:1px solid var(--border);border-radius:10px;padding:20px;background:#fff;
+    box-shadow:0 1px 3px rgba(0,0,0,.06);transition:transform .15s,box-shadow .15s;position:relative;
+  }
+  .card:hover{transform:translateY(-2px);box-shadow:0 6px 16px rgba(0,0,0,.1);}
+  .card .ico{
+    width:42px;height:42px;border-radius:9px;background:var(--primary-light);color:var(--primary);
+    display:flex;align-items:center;justify-content:center;margin-bottom:12px;font-size:20px;
+  }
+  .card h4{color:var(--heading);font-size:16px;margin-bottom:6px;}
+  .card p{color:var(--muted);font-size:14px;margin:0;}
+
+  /* ---------- Tables (Material style) ---------- */
+  table{width:100%;border-collapse:collapse;margin:18px 0;font-size:14px;box-shadow:0 1px 2px rgba(0,0,0,.06);}
+  thead th{background:var(--table-head);color:var(--heading);text-align:left;padding:10px 14px;font-weight:700;border:1px solid var(--border);}
+  tbody td{padding:10px 14px;border:1px solid var(--border);color:var(--text);}
+  tbody tr:nth-child(even){background:#fafbfc;}
+  td code{white-space:nowrap;}
+  .endpoint{color:var(--primary-dark);font-weight:600;font-family:var(--mono);}
+  .method{display:inline-block;background:var(--primary);color:#fff;font-size:11px;font-weight:700;
+    padding:2px 8px;border-radius:4px;letter-spacing:.4px;}
+
+  /* ---------- Hero ---------- */
+  .hero{background:linear-gradient(135deg,#0015ff 50%,#e6a707 20%,#ffc343 100%);color:#f6f6fa;border-radius:12px;padding:30px 32px;margin-bottom:8px;}
+  .hero h1{color:#fff;border:none;margin:0 0 8px;}
+  .hero p{color:#d6f5f0;margin:0;max-width:760px;}
+  .hero .pill{display:inline-block;background:rgba(255,255,255,.18);padding:3px 12px;border-radius:20px;font-size:12px;font-weight:600;margin-top:14px;}
+
+  /* responsive */
+  @media (max-width:900px){
+    .md-container{flex-direction:column;}
+    .md-sidebar{width:100%;height:auto;position:static;}
+    .md-content{padding:24px;}
+    .md-header .tagline{display:none;}
+  }
+</style>
+</head>
+<body>
+
+<!-- ================= HEADER ================= -->
+<div class="md-header">
+  <div class="md-header-inner">
+    <div class="brand">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="2" y="5" width="20" height="14" rx="2"/><line x1="2" y1="10" x2="22" y2="10"/><line x1="6" y1="15" x2="10" y2="15"/>
+      </svg>
+      Kaascan SDK <span class="tagline">· developer integration guide</span>
+    </div>
+    <a class="gh" href="#ref">v1.0</a>
+  </div>
+</div>
+
+<div class="md-container">
+
+  <!-- ================= SIDEBAR ================= -->
+  <div class="md-sidebar">
+    <div class="nav-label">Getting Started</div>
+    <nav>
+      <a class="active" href="#quick">Quick Start</a>
+      <a href="#generate">Generating a Card</a>
+      <a href="#cfg">Config Object</a>
+      <a href="#assets">Branding Assets</a>
+      <a href="#server">Web Server</a>
+      <a href="#auth">Authentication</a>
+      <a href="#rest">REST API</a>
+      <a href="#versioning">Template Versioning</a>
+      <a href="#ref">Reference</a>
+    </nav>
+    <div class="version">Kaascan SDK · v1.0.0<br>MIT License · open source</div>
+  </div>
+
+  <!-- ================= CONTENT ================= -->
+  <div class="md-content">
+
+    <div class="hero">
+      <h1>Developer Integration Guide</h1>
+      <p>Generate student ID cards from your app with a handful of clean calls. This guide covers the Python SDK, the REST web API, and the web server for template previews.</p>
+      <span class="pill">Python · FastAPI · Open Source</span>
+    </div>
+
+    <!-- ===== QUICK START ===== -->
+    <h2 id="quick">Quick Start</h2>
+    <p class="lead">Install the dependencies and start the preview server in two commands.</p>
+
+    <div class="highlight">
+      <div class="langbar"><span class="dots"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span></span><span class="lang">Terminal</span><button class="copy" onclick="copyCode(this)">copy</button></div>
+<pre><code><span class="tok-kw">pip</span> install -r requirements.txt
+<span class="tok-cm"># start the web UI (optional, for template previews)</span>
+<span class="tok-kw">python</span> -m card_sdk.web_server</code></pre>
+    </div>
+
+    <div class="admonition note">
+      <div class="admo-title">Note</div>
+      The package lives in <code>sdk/card_sdk/</code>. Add the <code>sdk/</code> folder to your
+      <code>PYTHONPATH</code> or install it so <code>import card_sdk</code> resolves to the repo copy.
+    </div>
+
+    <!-- ===== GENERATE ===== -->
+    <h2 id="generate">Generating a Card</h2>
+    <p>For a single card, <code>generate_card()</code> is all you need. It returns a status string and writes the finished PDF to the output folder.</p>
+
+    <div class="highlight">
+      <div class="langbar"><span class="dots"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span></span><span class="lang">example.py</span><button class="copy" onclick="copyCode(this)">copy</button></div>
+<pre><code><span class="tok-kw">from</span> card_sdk.card <span class="tok-kw">import</span> <span class="tok-fn">generate_card</span>, <span class="tok-fn">image_file_to_base64</span>
+
+result = <span class="tok-fn">generate_card</span>(
+    template_name=<span class="tok-str">"BLUE GREEN STUDENT CARD"</span>,
+    image_base64=<span class="tok-fn">image_file_to_base64</span>(<span class="tok-str">"student.jpg"</span>),
+    student_name=<span class="tok-str">"Tuyishimire Fraterine Ely"</span>,
+    student_class=<span class="tok-str">"Software Development"</span>,
+    school_name=<span class="tok-str">"KANYINYA TSS 001"</span>,
+    student_id=<span class="tok-str">"S-2026-001"</span>,
+    data_qrcode=<span class="tok-str">"https://kaascan.com/verify/S-2026-001"</span>,
+)
+<span class="tok-fn">print</span>(result)  <span class="tok-cm"># status message + output path</span></code></pre>
+    </div>
+
+    <p class="muted">Output goes to <code>output/&lt;school_name&gt;/&lt;class&gt;/final_student_card_&lt;id&gt;.pdf</code>.</p>
+
+    <h3>Choose a template</h3>
+    <div class="highlight">
+      <div class="langbar"><span class="dots"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span></span><span class="lang">Python</span><button class="copy" onclick="copyCode(this)">copy</button></div>
+<pre><code><span class="tok-kw">from</span> card_sdk.template_manager <span class="tok-kw">import</span> <span class="tok-fn">pull_template_options</span>, <span class="tok-fn">pull_template_files</span>
+
+options = <span class="tok-fn">pull_template_options</span>()   <span class="tok-cm"># e.g. ["BLUE GREEN STUDENT CARD", "RUNO SCHOOL CARD", ...]</span></code></pre>
+    </div>
+
+    <div class="grid">
+      <div class="card">
+        <div class="ico"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg></div>
+        <h4>One call</h4><p><code>generate_card()</code> renders the card and writes the final PDF automatically.</p>
+      </div>
+      <div class="card">
+        <div class="ico"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg></div>
+        <h4>Template list</h4><p><code>pull_template_options()</code> returns every installed template by name.</p>
+      </div>
+      <div class="card">
+        <div class="ico"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></div>
+        <h4>Extensible</h4><p>Branding assets, colors and typography are all optional keyword arguments.</p>
+      </div>
+    </div>
+
+    <!-- ===== CONFIG ===== -->
+    <h2 id="cfg">Config Object</h2>
+    <p>Wrap your data in a <code>CardConfig</code>. It centralises the values and can build a pydantic
+       <code>Student</code> model for the asynchronous batch flow.</p>
+
+    <div class="highlight">
+      <div class="langbar"><span class="dots"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span></span><span class="lang">config_usage.py</span><button class="copy" onclick="copyCode(this)">copy</button></div>
+<pre><code><span class="tok-kw">from</span> card_sdk.card <span class="tok-kw">import</span> <span class="tok-fn">CardConfig</span>, <span class="tok-fn">image_file_to_base64</span>
+
+photo = <span class="tok-fn">image_file_to_base64</span>(<span class="tok-str">"student.jpg"</span>)
+
+cfg = <span class="tok-fn">CardConfig</span>(
+    photo=photo,                                      <span class="tok-cm"># required: base64 student photo</span>
+    template_name=<span class="tok-str">"BLUE GREEN STUDENT CARD"</span>,
+    student_name=<span class="tok-str">"Tuyishimire Fraterine Ely"</span>,
+    student_class=<span class="tok-str">"Software Development"</span>,
+    school_name=<span class="tok-str">"KANYINYA TSS 001"</span>,
+    student_id=<span class="tok-str">"S-2026-001"</span>,
+    data_qrcode=<span class="tok-str">"https://kaascan.com/verify/S-2026-001"</span>,
+    <span class="tok-cm"># optional branding: school_logo, stamp, signature, barcode (all base64)</span>
+)
+
+<span class="tok-cm"># Option A: render the card content dict</span>
+content = cfg.<span class="tok-fn">generate_card_content</span>()    <span class="tok-cm"># renders card + writes PDF</span>
+
+<span class="tok-cm"># Option B: build a Student model for the async batch API</span>
+student = cfg.<span class="tok-fn">to_student</span>()              <span class="tok-cm"># card_sdk.card_agent.Student instance</span></code></pre>
+    </div>
+
+    <!-- ===== ASSETS ===== -->
+    <h2 id="assets">Branding Assets</h2>
+    <p>Pass base64-encoded assets as optional keyword arguments. Every parameter has a sensible default, so integrations only need to send what they have.</p>
+
+    <div class="highlight">
+      <div class="langbar"><span class="dots"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span></span><span class="lang">branding.py</span><button class="copy" onclick="copyCode(this)">copy</button></div>
+<pre><code><span class="tok-kw">from</span> card_sdk.card <span class="tok-kw">import</span> <span class="tok-fn">generate_card</span>, <span class="tok-fn">image_file_to_base64</span>
+
+result = <span class="tok-fn">generate_card</span>(
+    template_name=<span class="tok-str">"BLUE GREEN STUDENT CARD"</span>,
+    image_base64=<span class="tok-fn">image_file_to_base64</span>(<span class="tok-str">"student.jpg"</span>),
+    student_name=<span class="tok-str">"Alice Johnson"</span>,
+    student_class=<span class="tok-str">"Grade 4"</span>,
+    school_name=<span class="tok-str">"SUNRISE ACADEMY"</span>,
+    student_id=<span class="tok-str">"A-001"</span>,
+    data_qrcode=<span class="tok-str">"https://kaascan.com/verify/A-001"</span>,
+    <span class="tok-cm"># ---- optional branding ----</span>
+    school_logo=<span class="tok-fn">image_file_to_base64</span>(<span class="tok-str">"logo.png"</span>),
+    stamp_base64=<span class="tok-fn">image_file_to_base64</span>(<span class="tok-str">"stamp.png"</span>),
+    student_barcode=<span class="tok-fn">image_file_to_base64</span>(<span class="tok-str">"barcode.png"</span>),
+    signature_base64=<span class="tok-fn">image_file_to_base64</span>(<span class="tok-str">"signature.png"</span>),
+    side_2_color=<span class="tok-str">"#00897B"</span>,
+)</code></pre>
+    </div>
+
+    <h3>Image helpers</h3>
+    <table>
+      <thead><tr><th>Helper</th><th>Description</th></tr></thead>
+      <tbody>
+        <tr><td><code>image_file_to_base64(path)</code></td><td>Read a local image file and base64-encode it.</td></tr>
+        <tr><td><code>image_url_to_base64(url)</code></td><td>Synchronously fetch a remote image and encode it.</td></tr>
+        <tr><td><code>resize_image_base64(b64, w=100, h=100)</code></td><td>Resize an encoded image for smaller cards.</td></tr>
+      </tbody>
+    </table>
+
+    <!-- ===== SERVER ===== -->
+    <h2 id="server">Web Server</h2>
+    <p>Start the FastAPI web UI from the terminal. This is what the terminal UI's
+       “Start the web server to view templates?” prompt calls for you.</p>
+
+    <div class="highlight">
+      <div class="langbar"><span class="dots"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span></span><span class="lang">Terminal</span><button class="copy" onclick="copyCode(this)">copy</button></div>
+<pre><code><span class="tok-kw">python</span> -m card_sdk.web_server                  <span class="tok-cm"># port 8000</span>
+<span class="tok-kw">python</span> -m card_sdk.web_server --port 9000
+<span class="tok-kw">python</span> -m card_sdk.web_server --host 127.0.0.1</code></pre>
+    </div>
+
+    <p>Or start it from code:</p>
+    <div class="highlight">
+      <div class="langbar"><span class="dots"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span></span><span class="lang">Python</span><button class="copy" onclick="copyCode(this)">copy</button></div>
+<pre><code><span class="tok-kw">from</span> card_sdk.web_server <span class="tok-kw">import</span> <span class="tok-fn">serve_web</span>
+<span class="tok-fn">serve_web</span>(host=<span class="tok-str">"0.0.0.0"</span>, port=<span class="tok-num">8000</span>)   <span class="tok-cm"># blocks until interrupted</span></code></pre>
+    </div>
+
+    <p class="muted">The server binds to the local dev SDK automatically (it adds the repo to the path), so you always see the real templates.</p>
+
+    <!-- ===== AUTH ===== -->
+    <h2 id="auth">Authentication</h2>
+    <p>The admin API key is <strong>never embedded in code</strong>. Every run of the terminal
+       agent (<code>await Card.agent(...)</code>) starts a <strong>QR-code handshake</strong>: a scannable
+       code — plus the plain endpoint URL — is printed in the terminal, and your web service (WS) posts the
+       key back to authorize the SDK. Once authorized, card generation (SINGLE / MULTIPLE) is unlocked.</p>
+
+    <div class="grid">
+      <div class="card">
+        <div class="ico"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg></div>
+        <h4>No hard-coded keys</h4><p>The SDK ships without an API key. The key arrives at runtime through the handshake or an environment variable.</p>
+      </div>
+      <div class="card">
+        <div class="ico"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg></div>
+        <h4>Live validation</h4><p>The submitted key is verified against the Kaascan admin API before the SDK is authorized.</p>
+      </div>
+      <div class="card">
+        <div class="ico"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg></div>
+        <h4>In-memory only</h4><p>The key stays in process memory for the <code>X-API-KEY</code> header and is never written to disk.</p>
+      </div>
+    </div>
+
+    <h3>How the handshake works</h3>
+    <p>On startup the SDK starts a tiny local HTTP endpoint on <code>port 8132</code>, prints the QR code
+       (encoding <code>http://&lt;lan-ip&gt;:&lt;port&gt;/auth?token=…</code>) and waits. Scan the code with a
+       phone (a small authorize page opens), or point your web service at the endpoint and post the key:</p>
+
+    <div class="highlight">
+      <div class="langbar"><span class="dots"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span></span><span class="lang">Terminal · SDK</span><button class="copy" onclick="copyCode(this)">copy</button></div>
+<pre><code>[AUTH] Authorize the API user
+Scan the QR code (or open the endpoint) and post the
+'admin_api_key' your web service will send back.
+
+  Endpoint -&gt; http://192.168.1.50:8132/auth?token=1f3c9a...
+  (scannable QR code printed here)
+
+  Waiting 180s for authorization ... (Ctrl+C to abort)
+
+  [+] admin_api_key accepted — SDK authorized.
+  [✓] API user authorized — card generation unlocked.</code></pre>
+    </div>
+
+    <div class="highlight">
+      <div class="langbar"><span class="dots"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span></span><span class="lang">curl · Web service (WS)</span><button class="copy" onclick="copyCode(this)">copy</button></div>
+<pre><code><span class="tok-kw">curl</span> -X POST <span class="tok-str">"http://192.168.1.50:8132/auth?token=1f3c9a..."</span> \
+  -H <span class="tok-str">"Content-Type: application/json"</span> \
+  -d <span class="tok-str">'{ "admin_api_key": "YOUR_ADMIN_API_KEY" }'</span>
+
+<span class="tok-cm"># → {"ok": true, "authorized": true, "message": "authorized"}</span></code></pre>
+    </div>
+
+    <div class="admonition tip">
+      <div class="admo-title">Skip the handshake for automation</div>
+      Set <code>KAA_SCAN_API_KEY=&lt;key&gt;</code> in the environment and the handshake is skipped —
+      the SDK uses it directly. The runtime QR flow is only shown when no key is pre-configured.
+    </div>
+
+    <h3>Auth endpoints</h3>
+    <table>
+      <thead><tr><th>Method</th><th>Endpoint</th><th>Purpose</th></tr></thead>
+      <tbody>
+        <tr><td><span class="method">GET</span></td><td><span class="endpoint">/</span></td><td>Tiny HTML authorize page — open it with a phone to paste the key.</td></tr>
+        <tr><td><span class="method">POST</span></td><td><span class="endpoint">/auth</span></td><td>Receive + validate <code>admin_api_key</code> (JSON or form). Adds <code>?token=…</code> from the QR.</td></tr>
+        <tr><td><span class="method">GET</span></td><td><span class="endpoint">/auth/status</span></td><td>JSON status of the current session (<code>authorized</code>, <code>error</code>).</td></tr>
+      </tbody>
+    </table>
+
+    <h3>Validation behaviour</h3>
+    <div class="admonition note">
+      <div class="admo-title">How a submitted key is checked</div>
+      The key is probed against <code>https://api.v2.kaascan.com/admin/students</code>:
+      a valid students payload → authorized; an HTTP error (401/403) → rejected; the API unreachable
+      (offline machine) → accepted with a printed warning that it could not be verified remotely.
+    </div>
+
+    <h3>Configuration</h3>
+    <table>
+      <thead><tr><th>Variable</th><th>Default</th><th>Purpose</th></tr></thead>
+      <tbody>
+        <tr><td><code>KAA_SCAN_API_KEY</code></td><td><em>(unset)</em></td><td>Env-supplied admin key — skips the QR handshake.</td></tr>
+        <tr><td><code>KAA_AUTH_HOST</code></td><td><code>0.0.0.0</code></td><td>Bind host for the auth endpoint.</td></tr>
+        <tr><td><code>KAA_AUTH_PORT</code></td><td><code>8132</code></td><td>Bind port (a free port is chosen if busy).</td></tr>
+        <tr><td><code>KAA_AUTH_TIMEOUT</code></td><td><code>180</code></td><td>Seconds to wait for the WS before giving up.</td></tr>
+      </tbody>
+    </table>
+
+    <!-- ===== REST ===== -->
+    <h2 id="rest">REST API</h2>
+    <p>Once the server is running, call the endpoints from any client (curl, JavaScript, Postman, …).</p>
+
+    <table>
+      <thead><tr><th>Method</th><th>Endpoint</th><th>Purpose</th></tr></thead>
+      <tbody>
+        <tr><td><span class="method">GET</span></td><td><span class="endpoint">/healthy/status</span></td><td>Health check.<br><span class="muted">→ <code>{status, time_stamp}</code></span></td></tr>
+        <tr><td><span class="method">GET</span></td><td><span class="endpoint">/card/templates</span></td><td>List template names + preview paths.<br><span class="muted">→ <code>[{template_name, front_preview_path, back_preview_path}]</code></span></td></tr>
+        <tr><td><span class="method">GET</span></td><td><span class="endpoint">/student/photo/&lt;student_id&gt;</span></td><td>Get a cached student photo (PNG).</td></tr>
+        <tr><td><span class="method">GET</span></td><td><span class="endpoint">/student/card/&lt;front|back&gt;/&lt;student_id&gt;</span></td><td>Get a rendered card side as SVG.</td></tr>
+      </tbody>
+    </table>
+
+    <div class="highlight">
+      <div class="langbar"><span class="dots"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span></span><span class="lang">JavaScript / fetch</span><button class="copy" onclick="copyCode(this)">copy</button></div>
+<pre><code><span class="tok-kw">const</span> <span class="tok-var">res</span> = <span class="tok-kw">await</span> <span class="tok-fn">fetch</span>(<span class="tok-str">"http://localhost:8000/card/templates"</span>);
+<span class="tok-kw">const</span> <span class="tok-var">templates</span> = <span class="tok-kw">await</span> res.json();
+<span class="tok-fn">console</span>.log(templates.map(t => t.template_name));</code></pre>
+    </div>
+
+    <div class="highlight">
+      <div class="langbar"><span class="dots"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span></span><span class="lang">curl</span><button class="copy" onclick="copyCode(this)">copy</button></div>
+<pre><code>curl http://localhost:8000/card/templates
+curl http://localhost:8000/student/card/front/S-2026-001</code></pre>
+    </div>
+
+    <div class="admonition tip">
+      <div class="admo-title">Tip</div>
+      Interactive API docs are available at <code>http://localhost:8000/docs</code> (Swagger UI).
+    </div>
+
+    <!-- ===== VERSIONING ===== -->
+    <h2 id="versioning">Template Versioning</h2>
+    <p>Card designs live as SVG source files in <code>card_sdk/templates/templates_base/&lt;template&gt;/</code>.
+       The generator reads a minified <code>.card.kaascan</code> file for each side, so applying a design
+       update used to mean hand-collapsing the SVG and re-editing every card. The versioning CLI turns
+       template design into simple, git-style commands.</p>
+
+    <p>When a designer ships a new look, drop <code>front.svg</code> / <code>back.svg</code> into the
+       template folder and commit. The design is snapshotted, the <code>.card.kaascan</code> files are
+       rebuilt so the generator picks it up immediately, and it becomes the active version. Old designs stay
+       under <code>versions/</code> and can be restored at any time — no card rewriting needed.</p>
+
+    <div class="highlight">
+      <div class="langbar"><span class="dots"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span></span><span class="lang">Terminal</span><button class="copy" onclick="copyCode(this)">copy</button></div>
+<pre><code><span class="tok-kw">python</span>3 -m card_sdk.template_versioning build BANK_INSPIRE
+<span class="tok-kw">python</span>3 -m card_sdk.template_versioning commit BANK_INSPIRE --label spring-2026 --message "Spring rebrand"
+<span class="tok-kw">python</span>3 -m card_sdk.template_versioning list
+<span class="tok-kw">python</span>3 -m card_sdk.template_versioning current BANK_INSPIRE
+<span class="tok-kw">python</span>3 -m card_sdk.template_versioning rollback BANK_INSPIRE --label v1</code></pre>
+    </div>
+
+    <h3>Folder layout</h3>
+    <div class="highlight">
+      <div class="langbar"><span class="dots"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span></span><span class="lang">Tree</span><button class="copy" onclick="copyCode(this)">copy</button></div>
+<pre><code>templates_base/BANK_INSPIRE/
+├── front.svg  ·  back.svg                       <span class="tok-cm"># working design (source of truth)</span>
+├── front.card.kaascan  ·  back.card.kaascan     <span class="tok-cm"># rebuilt from the svg — generator reads these</span>
+└── versions/
+    ├── .current                                 <span class="tok-cm"># active label</span>
+    ├── v1/          (front.svg, back.svg, meta.json)   <span class="tok-cm"># one snapshot per label, like a branch</span>
+    └── spring-2026/ (front.svg, back.svg, meta.json)</code></pre>
+    </div>
+
+    <h3>Commands</h3>
+    <table>
+      <thead><tr><th>Command</th><th>Purpose</th></tr></thead>
+      <tbody>
+        <tr><td><code>build &lt;template&gt;</code></td><td>Rebuild the <code>.card.kaascan</code> files from the SVGs in the folder — e.g. right after hand-editing a design. Warns about missing standard placeholders.</td></tr>
+        <tr><td><code>commit &lt;template&gt; --label &lt;name&gt; [--message "…"]</code></td><td>Snapshot the current design under <code>versions/&lt;label&gt;</code>, sync the <code>.kaascan</code> cards and mark it active. Reusing a label needs <code>--force</code>.</td></tr>
+        <tr><td><code>list [&lt;template&gt;]</code></td><td>All committed versions (label, date, message); <code>*</code> marks the active one. Without a template it covers every installed template.</td></tr>
+        <tr><td><code>current &lt;template&gt;</code></td><td>Show the active version label.</td></tr>
+        <tr><td><code>rollback &lt;template&gt; --label &lt;name&gt;</code></td><td>Restore the working SVG + <code>.kaascan</code> from a saved snapshot and make that design active again.</td></tr>
+      </tbody>
+    </table>
+
+    <div class="admonition tip">
+      <div class="admo-title">Workflow</div>
+      Designer drops <code>front.svg</code> + <code>back.svg</code> → <code>commit --label spring-2026</code>
+      → cards render with the new design immediately; the previous design is still one
+      <code>rollback --label v1</code> away.
+    </div>
+
+    <div class="admonition warning">
+      <div class="admo-title">Keep the placeholders</div>
+      Card data is filled through <code>{…}</code> placeholders inside the SVG
+      (<code>{name}</code>, <code>{student_code}</code>, <code>{student_class}</code>,
+      <code>{school_name}</code>, <code>{student_id}</code>, <code>{student_photo}</code>,
+      <code>{student_barcode}</code>, <code>{valid_thru}</code>, <code>{school_type}</code>).
+      <code>build</code> / <code>commit</code> warn when a freshly-dropped design is missing one, so card
+      fields never silently stay empty.
+    </div>
+
+    <!-- ===== REFERENCE ===== -->
+    <h2 id="ref">Reference</h2>
+
+    <h3>generate_card()</h3>
+    <div class="highlight">
+      <div class="langbar"><span class="dots"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span></span><span class="lang">Signature</span><button class="copy" onclick="copyCode(this)">copy</button></div>
+<pre><code><span class="tok-fn">generate_card</span>(
+    template_name: <span class="tok-kw">str</span>,
+    image_base64: <span class="tok-kw">str</span>,          <span class="tok-cm"># student photo (base64)</span>
+    student_name: <span class="tok-kw">str</span>,
+    student_class: <span class="tok-kw">str</span>,
+    school_name: <span class="tok-kw">str</span>,
+    student_id: <span class="tok-kw">str</span>,
+    student_code=<span class="tok-str">""</span>,          <span class="tok-cm"># card number, e.g. "5298 7601 2345 6789"</span>
+    valid_thru=<span class="tok-str">"09/30"</span>,        <span class="tok-cm"># shown under "VALID THRU"</span>
+    school_type=<span class="tok-str">"HIGH SCHOOL"</span>, <span class="tok-cm"># school category</span>
+    data_qrcode: <span class="tok-kw">str</span> = <span class="tok-str">""</span>,   <span class="tok-cm"># payload for the QR code</span>
+    side_2_color=<span class="tok-str">"#00897B"</span>,
+    school_logo=<span class="tok-str">""</span>,
+    stamp_base64=<span class="tok-str">""</span>,
+    student_barcode=<span class="tok-str">""</span>,
+    signature_base64=<span class="tok-str">""</span>,
+    snFontsize=<span class="tok-num">2.4932</span>, snx=<span class="tok-num">-10.523738</span>, sny=<span class="tok-num">-0.8769781</span>,
+) -&gt; <span class="tok-kw">str</span></code></pre>
+    </div>
+
+    <h3>Public entry points</h3>
+    <table>
+      <thead><tr><th>Symbol</th><th>From</th><th>Notes</th></tr></thead>
+      <tbody>
+        <tr><td><code>generate_card</code></td><td><code>card_sdk.card</code></td><td>Render a single card (returns status string).</td></tr>
+        <tr><td><code>save_card(content, id, class, school)</code></td><td><code>card_sdk.card</code></td><td>Convert card SVG content to the final PDF.</td></tr>
+        <tr><td><code>CardConfig</code></td><td><code>card_sdk.card</code></td><td>Config object → <code>generate_card_content()</code> / <code>to_student()</code>.</td></tr>
+        <tr><td><code>Card</code></td><td><code>card_sdk.card_agent</code></td><td>Async batch entry point — <code>await Card.agent(data=student)</code>.</td></tr>
+        <tr><td><code>Student</code></td><td><code>card_sdk.card_agent</code></td><td>Pydantic model (photo, name, Class, school_name, data_qrcode, student_id, template_name, + student_code, valid_thru, school_type).</td></tr>
+        <tr><td><code>pull_template_options</code></td><td><code>card_sdk.template_manager</code></td><td>List of template names.</td></tr>
+        <tr><td><code>pull_template_files</code></td><td><code>card_sdk.template_manager</code></td><td>Detailed template file list (front/back paths).</td></tr>
+        <tr><td><code>serve_web</code></td><td><code>card_sdk.web_server</code></td><td>Start the FastAPI web UI.</td></tr>
+        <tr><td><code>template_versioning</code></td><td><code>card_sdk.template_versioning</code></td><td>Git-style design versions — <code>python3 -m card_sdk.template_versioning list</code>.</td></tr>
+        <tr><td><code>start_auth_server()</code></td><td><code>card_sdk.api_auth</code></td><td>Start the QR-handshake endpoint → <code>(server, session)</code>.</td></tr>
+        <tr><td><code>session_endpoint(server)</code></td><td><code>card_sdk.api_auth</code></td><td>Reachable <code>/auth</code> URL (LAN IP) for the QR code &amp; the WS.</td></tr>
+        <tr><td><code>print_terminal_qrcode(url)</code></td><td><code>card_sdk.api_auth</code></td><td>Render a scannable QR code straight in the terminal.</td></tr>
+        <tr><td><code>await_authorization(session)</code></td><td><code>card_sdk.api_auth</code></td><td>Await the WS handshake → returns the authorized key.</td></tr>
+        <tr><td><code>get / set_admin_api_key()</code></td><td><code>card_sdk.api_auth</code></td><td>Read/write the authorized key (env <code>KAA_SCAN_API_KEY</code> as fallback).</td></tr>
+        <tr><td><code>validate_admin_api_key(key)</code></td><td><code>card_sdk.api_auth</code></td><td>Probe the admin API with a key → <code>bool</code>.</td></tr>
+      </tbody>
+    </table>
+
+    <div class="admonition warning">
+      <div class="admo-title">Tip</div>
+      The effective card <em>content</em> (SVG) lives in the returned value of
+      <code>generate_card()</code> &amp; <code>CardConfig.generate_card_content()</code>; the final PDF is
+      produced by <code>save_card()</code> / the card agent. For most integrations, calling
+      <code>generate_card()</code> is enough — the PDF is written automatically.
+    </div>
+
+  </div>
+</div>
+
+<script>
+  // copy-to-clipboard for code blocks
+  function copyCode(btn){
+    var pre = btn.closest('.highlight').querySelector('pre');
+    var text = pre.innerText;
+    navigator.clipboard.writeText(text).then(function(){
+      btn.textContent = "copied ✓";
+      setTimeout(function(){ btn.textContent = "copy"; }, 1600);
+    });
+  }
+
+  // active sidebar highlighting
+  var links = document.querySelectorAll('.md-sidebar nav a');
+  var map = {};
+  links.forEach(function(a){ map[a.getAttribute('href').slice(1)] = a; });
+  window.addEventListener('scroll', function(){
+    var pos = window.scrollY + 120;
+    var current = null;
+    document.querySelectorAll('.md-content h2').forEach(function(h){
+      if (h.offsetTop <= pos) current = h.id;
+    });
+    links.forEach(function(a){ a.classList.remove('active'); });
+    if (map[current]) map[current].classList.add('active');
+  });
+</script>
+</body>
+</html>
