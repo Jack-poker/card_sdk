@@ -60,7 +60,7 @@ IMAGE_SLOTS = {
         ],
         "stamp_base64": [
             {"type": "overlay", "x": "29.7", "y": "18.5", "w": "16.1", "h": "15.9",
-             "pa": "xMidYMid meet", "faces": "back"},
+             "pa": "xMidYMid meet", "faces": "back", "replaces": "stamp"},
         ],
         "signature_base64": [
             {"type": "overlay", "x": "40.5", "y": "26.2", "w": "6.6", "h": "9.8",
