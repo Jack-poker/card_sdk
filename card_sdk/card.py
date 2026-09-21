@@ -644,6 +644,157 @@ def _sanitize_font_families(svg_text: str) -> str:
 
     svg_text = re.sub(r"<text\b[^>]*>", _ensure_face, svg_text)
 
+    # Pass 2b: normalise text elements for svg2pdf compatibility.
+    # svg2pdf ignores text-anchor when set only in CSS style (needs XML attr),
+    # mishandles font-variant-position:sub, leaves editor scale transforms on
+    # <text> that shift the rendered position, and does not honour tspan x/y
+    # overrides for line breaks.  This pass applies at render time so the
+    # template SVG stays untouched.
+
+    def _fix_text_for_svg2pdf(m):
+        open_tag = m.group(1)
+        inner = m.group(2)
+        close_tag = m.group(3)
+        tag = open_tag
+
+        # Bake the transform into x/y coordinates instead of leaving it
+        # on the element — svg2pdf mishandles scale/rotate transforms on
+        # <text> elements, causing position drift vs the template editor.
+        sx = sy = tx = ty = 0.0
+        has_transform = False
+        xform_m = re.search(r'\btransform="([^"]*)"', tag)
+        if xform_m:
+            has_transform = True
+            xform_str = xform_m.group(1)
+            for op_m in re.finditer(
+                r'(translate|scale)\s*\(\s*([^)]+)\)', xform_str
+            ):
+                kind = op_m.group(1)
+                nums = [float(v) for v in op_m.group(2).replace(",", " ").split()]
+                if kind == "translate":
+                    tx = nums[0] if len(nums) > 0 else 0
+                    ty = nums[1] if len(nums) > 1 else 0
+                elif kind == "scale":
+                    sx = nums[0] if len(nums) > 0 else 1
+                    sy = nums[1] if len(nums) > 1 else 1
+            # Apply to parent x/y
+            x_m = re.search(r'\bx="([^"]+)"', tag)
+            y_m = re.search(r'\by="([^"]+)"', tag)
+            if x_m and y_m:
+                new_x = float(x_m.group(1)) * sx + tx
+                new_y = float(y_m.group(1)) * sy + ty
+                tag = tag[:x_m.start()] + f'x="{new_x:.6g}"' + tag[x_m.end():]
+                y_m2 = re.search(r'\by="([^"]+)"', tag)
+                if y_m2:
+                    tag = tag[:y_m2.start()] + f'y="{new_y:.6g}"' + tag[y_m2.end():]
+            tag = re.sub(r'\s*transform="[^"]*"', '', tag)
+
+        # Compensate for font-variant-position:sub — the template editor
+        # renders this as a visible downward shift, but svg2pdf ignores it
+        # entirely.  Nudge y down by ~0.35× font-size so the gap between
+        # text and surrounding elements (e.g. barcode) matches the editor.
+        sub_offset = 0.0
+        if 'font-variant-position:sub' in tag:
+            fs_m = re.search(r'font-size:\s*([\d.]+)px', tag)
+            if fs_m:
+                sub_offset = float(fs_m.group(1)) * 0.35
+                y_m3 = re.search(r'\by="([^"]+)"', tag)
+                if y_m3:
+                    new_y2 = float(y_m3.group(1)) + sub_offset
+                    tag = (tag[:y_m3.start()]
+                           + f'y="{new_y2:.6g}"'
+                           + tag[y_m3.end():])
+
+        # Promote text-anchor from CSS style to XML attribute (svg2pdf only
+        # reads the XML attribute, not the CSS property).
+        anchor_m = re.search(r'text-anchor\s*:\s*([^;\s"]+)', tag)
+        if anchor_m:
+            val = anchor_m.group(1)
+            tag = re.sub(r'\btext-anchor\s*:\s*[^;\s"]+\s*;?', '', tag)
+            close_idx = tag.rfind('>')
+            tag = tag[:close_idx] + f' text-anchor="{val}"' + tag[close_idx:]
+
+        # If the text had a transform, bake it into child tspan x/y too
+        # and strip their explicit x/y so _split_multiline can re-split.
+        if has_transform and inner:
+            def _fix_tspan(ts_m):
+                ts_attrs = ts_m.group(1)
+                ts_text = ts_m.group(2)
+                tx_m = re.search(r'\bx="([^"]+)"', ts_attrs)
+                ty_m = re.search(r'\by="([^"]+)"', ts_attrs)
+                if tx_m and ty_m:
+                    nx = float(tx_m.group(1)) * sx + tx
+                    ny = float(ty_m.group(1)) * sy + ty + sub_offset
+                    ts_attrs = ts_attrs[:tx_m.start()] + f'x="{nx:.6g}"' + ts_attrs[tx_m.end():]
+                    ty_m2 = re.search(r'\by="([^"]+)"', ts_attrs)
+                    if ty_m2:
+                        ts_attrs = ts_attrs[:ty_m2.start()] + f'y="{ny:.6g}"' + ts_attrs[ty_m2.end():]
+                    # Strip x/y so _split_multiline can handle positioning
+                    ts_attrs = re.sub(r'\s+x="[^"]*"', '', ts_attrs)
+                    ts_attrs = re.sub(r'\s+y="[^"]*"', '', ts_attrs)
+                return f'<tspan{ts_attrs}>{ts_text}</tspan>'
+            inner = re.sub(r'<tspan\b([^>]*)>([^<]*)</tspan>', _fix_tspan, inner)
+
+        return tag + inner + close_tag
+
+    svg_text = re.sub(r'(<text\b[^>]*>)(.*?)(</text>)', _fix_text_for_svg2pdf, svg_text)
+
+    # Pass 2c: split multi-tspan <text> elements into separate <text> tags so
+    # each line renders independently (svg2pdf does not honour tspan y overrides
+    # for line breaks).  Only applies when tspans lack explicit x/y attrs
+    # (i.e. the editor handled visual wrapping).
+    _RE_TEXT_BLOCK = re.compile(
+        r'(<text\b[^>]*>)(.*?)(</text>)', re.DOTALL
+    )
+    _RE_TSPAN = re.compile(
+        r'<tspan\b([^>]*)>([^<]*)</tspan>', re.DOTALL
+    )
+
+    def _split_multiline(m):
+        open_tag = m.group(1)
+        inner = m.group(2)
+        close_tag = m.group(3)
+
+        tspans = _RE_TSPAN.findall(inner)
+        if len(tspans) <= 1:
+            return m.group(0)  # single tspan or no tspan — leave alone
+
+        # Check whether any tspan already has absolute x/y — if so, respect
+        # the author's positioning and don't split.
+        if any(' x=' in attrs or ' y=' in attrs for attrs, _ in tspans):
+            return m.group(0)
+
+        # Extract parent x, y and font-size.
+        px_m = re.search(r'\bx="([^"]+)"', open_tag)
+        py_m = re.search(r'\by="([^"]+)"', open_tag)
+        if not px_m or not py_m:
+            return m.group(0)
+        px = float(px_m.group(1))
+        py = float(py_m.group(1))
+
+        fs_m = re.search(r'font-size\s*:\s*([\d.]+)', open_tag)
+        font_size = float(fs_m.group(1)) if fs_m else 1.98825
+        line_height = font_size * 1.122
+
+        # Build one <text> per tspan.
+        # Keep all attributes from the parent <text> but give each its own y.
+        # Strip existing y from the opening tag so we don't duplicate it.
+        base_tag = re.sub(r'\s+y="[^"]*"', '', open_tag)
+        base_tag = base_tag.rstrip(">").rstrip()
+        parts = []
+        for i, (attrs, text) in enumerate(tspans):
+            if not text.strip():
+                continue
+            new_y = py + i * line_height
+            parts.append(
+                f'{base_tag} y="{new_y}">'
+                f'<tspan{attrs}>{text}</tspan>'
+                f'{close_tag}'
+            )
+        return ''.join(parts) if parts else m.group(0)
+
+    svg_text = _RE_TEXT_BLOCK.sub(_split_multiline, svg_text)
+
     # Pass 3: a card side authored/saved in Inkscape can carry a *pixel* page
     # size (width="85.6px") instead of mm. svg2pdf interprets that as
     # 85.6 points, which makes the page ~25% of the front card. Normalise the
