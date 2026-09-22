@@ -695,21 +695,41 @@ def _sanitize_font_families(svg_text: str) -> str:
                     tag = tag[:y_m2.start()] + f'y="{new_y:.6g}"' + tag[y_m2.end():]
             tag = re.sub(r'\s*transform="[^"]*"', '', tag)
 
-        # Compensate for font-variant-position:sub — the template editor
-        # renders this as a visible downward shift, but svg2pdf ignores it
-        # entirely.  Nudge y down by ~0.35× font-size so the gap between
-        # text and surrounding elements (e.g. barcode) matches the editor.
+        # font-variant-position:sub appears only on the multi-line "Iyi karita…"
+        # paragraph (both faces).  svg2pdf ignores it, but the template editor
+        # barely shifts that block either (it is a whole paragraph, not a real
+        # subscript), so no extra nudge is needed — adding one pushed those
+        # lines ~2pt below the design.
         sub_offset = 0.0
-        if 'font-variant-position:sub' in tag:
-            fs_m = re.search(r'font-size:\s*([\d.]+)px', tag)
-            if fs_m:
-                sub_offset = float(fs_m.group(1)) * 0.35
-                y_m3 = re.search(r'\by="([^"]+)"', tag)
-                if y_m3:
-                    new_y2 = float(y_m3.group(1)) + sub_offset
-                    tag = (tag[:y_m3.start()]
-                           + f'y="{new_y2:.6g}"'
-                           + tag[y_m3.end():])
+
+        # Baseline compensation: the same font measures a slightly different
+        # ascender in our bundled TTF/OTF (rendered by svg2pdf) than the
+        # template editor's rendering (Inkscape/Pango), so every glyph top
+        # comes out a bit lower than the design.  Lift y by the measured
+        # per-family delta (in em) so text sinks back onto the design line.
+        _BASELINE_DELTA_EM = {"gilroy": 0.15, "space grotesk": 0.045}
+        lift_mm = 0.0
+        fam_m = re.search(r'font-family:\s*["\']?([^";]+)', tag)
+        if fam_m:
+            delta = _BASELINE_DELTA_EM.get(fam_m.group(1).strip().lower(), 0.0)
+            if delta:
+                fs_u = re.search(r'font-size:\s*([\d.]+)(px|pt|mm)?', tag)
+                if fs_u:
+                    fs_val = float(fs_u.group(1))
+                    fs_unit = fs_u.group(2) or "px"
+                    # Both svg2pdf and the template editor scale these px
+                    # font sizes as if they were mm (1px renders as 1mm here),
+                    # so a px size and an mm size both map 1:1 onto the
+                    # mm-valued y coordinates.  Only pt needs shrinking.
+                    mm_per_unit = {"px": 1.0, "mm": 1.0, "pt": 1.0 / 2.83465}.get(fs_unit, 1.0)
+                    lift_mm = delta * fs_val * mm_per_unit
+        if lift_mm:
+            y_m4 = re.search(r'\by="([^"]+)"', tag)
+            if y_m4:
+                yv = float(y_m4.group(1)) - lift_mm
+                tag = (tag[:y_m4.start()]
+                       + f'y="{yv:.6g}"'
+                       + tag[y_m4.end():])
 
         # Promote text-anchor from CSS style to XML attribute (svg2pdf only
         # reads the XML attribute, not the CSS property).
@@ -720,8 +740,10 @@ def _sanitize_font_families(svg_text: str) -> str:
             close_idx = tag.rfind('>')
             tag = tag[:close_idx] + f' text-anchor="{val}"' + tag[close_idx:]
 
-        # If the text had a transform, bake it into child tspan x/y too
-        # and strip their explicit x/y so _split_multiline can re-split.
+        # If the text had a transform, bake it into child tspan x/y too.
+        # svg2pdf honours tspan x/y, so we keep the author's absolute line
+        # positions — re-splitting here would replace the designed line
+        # spacing with a heuristic.  The baseline lift applies to every line.
         if has_transform and inner:
             def _fix_tspan(ts_m):
                 ts_attrs = ts_m.group(1)
@@ -730,14 +752,11 @@ def _sanitize_font_families(svg_text: str) -> str:
                 ty_m = re.search(r'\by="([^"]+)"', ts_attrs)
                 if tx_m and ty_m:
                     nx = float(tx_m.group(1)) * sx + tx
-                    ny = float(ty_m.group(1)) * sy + ty + sub_offset
+                    ny = float(ty_m.group(1)) * sy + ty + sub_offset - lift_mm
                     ts_attrs = ts_attrs[:tx_m.start()] + f'x="{nx:.6g}"' + ts_attrs[tx_m.end():]
                     ty_m2 = re.search(r'\by="([^"]+)"', ts_attrs)
                     if ty_m2:
                         ts_attrs = ts_attrs[:ty_m2.start()] + f'y="{ny:.6g}"' + ts_attrs[ty_m2.end():]
-                    # Strip x/y so _split_multiline can handle positioning
-                    ts_attrs = re.sub(r'\s+x="[^"]*"', '', ts_attrs)
-                    ts_attrs = re.sub(r'\s+y="[^"]*"', '', ts_attrs)
                 return f'<tspan{ts_attrs}>{ts_text}</tspan>'
             inner = re.sub(r'<tspan\b([^>]*)>([^<]*)</tspan>', _fix_tspan, inner)
 
@@ -1232,9 +1251,11 @@ def _safe_format(svg_text: str, fmt_args: dict) -> str:
 
     # Anchors first: their marker braces are attributes the classic pass must
     # never consume (``{name}`` inside ``data-format="..."`` would be replaced
-    # by the raw value, turning the anchor into a dead marker).
+    # by the raw value, turning the anchor into a dead marker). The lookbehind
+    # keeps ``data-format="{name}"`` braces alive while still substituting
+    # inline ``{name}`` text and ``xlink:href="../{name}"``.
     svg_text = _substitute_format_anchors(svg_text, fmt_args)
-    return re.sub(r"(\.\./|\./)?\{([A-Za-z_][\w]*)\}", sub, svg_text)
+    return re.sub(r"(?<!data-format=\")(\.\./|\./)?\{([A-Za-z_][\w]*)\}", sub, svg_text)
 
 
 def _escape_xml_text(value: str) -> str:
@@ -1264,10 +1285,12 @@ def _substitute_format_anchors(svg_text: str, fmt_args: dict) -> str:
         inner = block[len(open_tag):]
         if inner.endswith("</text>"):
             inner = inner[:-len("</text>")]
-        # Replace only the first tspan's text run and leave every other tspan
-        # and all surrounding structure untouched — multi-line designs keep
-        # their line geometry instead of being collapsed into a single line.
-        tsp = re.match(r"(<tspan\b[^>]*>)(.*?)(</tspan>)", inner, flags=re.S)
+        # A demo text node is a <text> whose own (often last or only) tspan holds
+        # the finished-looking text; the <text> may be preceded by whitespace/new
+        # lines. Locate the first tspan anywhere in the inner body and swap only
+        # its text run — never touch sibling tspans (multi-line designs keep
+        # their per-line geometry) and never insert a bare run ahead of them.
+        tsp = re.search(r"(<tspan\b[^>]*>)(.*?)(</tspan>)", inner, flags=re.S)
         if tsp:
             inner = tsp.group(1) + value + tsp.group(3) + inner[tsp.end():]
         else:
