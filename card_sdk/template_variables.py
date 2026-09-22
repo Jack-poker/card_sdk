@@ -243,6 +243,37 @@ def check_template(template_name: str) -> list:
     return missing
 
 
+def restore_svg_variables(svg: str, template_name: str) -> str:
+    """In-memory, structure-preserving re-wiring of demo-locked text nodes.
+
+    Returns a patched SVG *string*; the template file on disk is never touched.
+    The only change made is adding a ``data-format`` attribute to a ``<text>``
+    open tag whose visible text matches a known demo slot but carries neither an
+    anchor nor a placeholder.  No overlay images are inserted and no element is
+    deleted, so the design keeps its exact layout.
+
+    Used by the card renderer (``generate_card``); the disk-mutating CLI
+    ``restore`` is a separate, explicit maintenance action.
+    """
+    slots = DEMO_SLOTS.get(template_name, {})
+    if not slots:
+        return svg
+    for var, demos in slots.items():
+        for block in _TEXT_NODE.findall(svg) or []:
+            text = _inner_text(block)
+            if text not in demos or text == "":
+                continue
+            if _ANCHOR.search(block) or _PLACEHOLDER.search(block):
+                continue  # already wired: nothing to restore
+            open_tag = _OPEN_TAG.match(block).group(0)
+            anchor = f' data-format="{{{var}}}"'
+            if anchor in _strip_attrs(block):
+                continue
+            new_open = open_tag[:-1] + anchor + ">"
+            svg = svg.replace(block, new_open + block[len(open_tag):], 1)
+    return svg
+
+
 def restore_template_variables(template_name: str) -> list:
     """Re-attach ``data-format`` anchors to demo-locked visible text nodes.
 

@@ -1257,15 +1257,21 @@ def _substitute_format_anchors(svg_text: str, fmt_args: dict) -> str:
             return block
         name = name.group(1)
         value = _escape_xml_text(str(fmt_args[name]))
-        inner = re.search(r"<text\b[^>]*>(.*)</text>", block, flags=re.S).group(1)
-        span = re.search(r"<tspan\b[^>]*>", inner)
-        if span:
-            pad = inner[: span.start()]
-            inner = pad + span.group(0) + value + "</tspan>"
-        else:
-            inner = value
-        open_tag = re.match(r"<(text)\b[^>]*>", block).group(0)
+        # Keep the open tag byte-for-byte except for the anchor marker — all
+        # geometry (x/y/font-size/style) lives there and must not move.
+        open_tag = re.match(r"<text\b[^>]*>", block).group(0)
         open_tag = re.sub(r' data-format="[^"]*"', f' data-format="{{{name}}}"', open_tag, count=1)
+        inner = block[len(open_tag):]
+        if inner.endswith("</text>"):
+            inner = inner[:-len("</text>")]
+        # Replace only the first tspan's text run and leave every other tspan
+        # and all surrounding structure untouched — multi-line designs keep
+        # their line geometry instead of being collapsed into a single line.
+        tsp = re.match(r"(<tspan\b[^>]*>)(.*?)(</tspan>)", inner, flags=re.S)
+        if tsp:
+            inner = tsp.group(1) + value + tsp.group(3) + inner[tsp.end():]
+        else:
+            inner = re.sub(r"(?s)^(\s*)([^<]+)", lambda g: g.group(1) + value, inner, count=1)
         return open_tag + inner + "</text>"
 
     def image_sub(m):
@@ -1480,19 +1486,23 @@ def generate_card(
 
     # Auto-heal: an Inkscape save / CardFly round-trip / re-export can strip the
     # variable wiring from a template's visible text (demo text freezes on every
-    # card). Re-attach the anchors before rendering; missing vars are restored.
+    # card). Re-attach the anchors in-memory before rendering. This never writes
+    # back to the template files, so the pushed design keeps its exact layout —
+    # no overlays inserted, no elements deleted, no coordinates touched.
     try:
         from card_sdk import template_variables as _tv
 
-        _tv.restore_template_variables(template_name)
+        _restore_svg_variables = _tv.restore_svg_variables
     except Exception:
-        pass
+        _restore_svg_variables = lambda svg, _name: svg
 
     with open(f"{base_dir}/templates/templates_base/{template_name}/front.card.kaascan", "r", encoding="utf-8") as f:
-        front = _safe_format(_decode_urlencoded_placeholders(f.read()), fmt_args)
+        _raw = _decode_urlencoded_placeholders(f.read())
+        front = _safe_format(_restore_svg_variables(_raw, template_name), fmt_args)
 
     with open(f"{base_dir}/templates/templates_base/{template_name}/back.card.kaascan", "r", encoding="utf-8") as f:
-        back = _safe_format(_decode_urlencoded_placeholders(f.read()), fmt_args)
+        _raw = _decode_urlencoded_placeholders(f.read())
+        back = _safe_format(_restore_svg_variables(_raw, template_name), fmt_args)
 
     # Per-role color override: side_2_color recolors the card *back* only, the
     # rest apply to both faces. Colors already on the template keep their own
