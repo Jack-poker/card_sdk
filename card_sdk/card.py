@@ -801,23 +801,27 @@ def _sanitize_font_families(svg_text: str) -> str:
 
     svg_text = _RE_TEXT_BLOCK.sub(_split_multiline, svg_text)
 
-    # Pass 3: a card side authored/saved in Inkscape can carry a *pixel* page
-    # size (width="85.6px") instead of mm. svg2pdf interprets that as
-    # 85.6 points, which makes the page ~25% of the front card. Normalise the
-    # root page width/height to mm (the numeric value stays the same; it's the
-    # same unit of measure as the viewBox).
+    # Pass 3: every card side must render on a true CR80 page (85.6 × 54 mm =
+    # 242.6 × 153 pt @72dpi). svg2pdf resolves CSS units at 96 dpi, so a root
+    # width="85.6mm" becomes 323.5 pt (a 114 × 72 mm page) — each card prints
+    # 4/3 oversize. Rewrite the root width/height as unitless *point* values
+    # derived from the viewBox (1 viewBox unit = 1 mm here), so the page lands
+    # at exactly the physical card size and matches the template editor.
     svg_start = svg_text.find("<svg")
     root_end = svg_text.find(">", svg_start if svg_start != -1 else 0)
     if root_end != -1 and svg_start != -1:
         root_tag = svg_text[svg_start: root_end + 1]
-        root_tag = re.sub(
-            r'(width|height)="([^"]+)"',
-            lambda m: f'{m.group(1)}="{float(m.group(2)[:-2]):g}mm"'
-            if m.group(2).lower().endswith("px")
-            else m.group(0),
-            root_tag,
-        )
-        svg_text = svg_text[:svg_start] + root_tag + svg_text[root_end + 1:]
+        vb_m = re.search(r'\bviewBox="\s*([\d.-]+)[\s,]+([\d.-]+)[\s,]+([\d.-]+)[\s,]+([\d.-]+)"', root_tag)
+        if vb_m:
+            vb_w = float(vb_m.group(3))
+            vb_h = float(vb_m.group(4))
+            root_tag = re.sub(
+                r'\bwidth="[^"]*"', f'width="{vb_w * 72 / 25.4:.6g}"', root_tag, count=1
+            )
+            root_tag = re.sub(
+                r'\bheight="[^"]*"', f'height="{vb_h * 72 / 25.4:.6g}"', root_tag, count=1
+            )
+            svg_text = svg_text[:svg_start] + root_tag + svg_text[root_end + 1:]
 
     # Pass 4: gradient text -> flattened gradient paths (see module docs above).
     # Runs before the solid-fill pass so url() fills are consumed here; anything
