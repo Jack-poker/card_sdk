@@ -668,6 +668,7 @@ def _sanitize_font_families(svg_text: str) -> str:
         # <text> elements, causing position drift vs the template editor.
         sx = sy = tx = ty = 0.0
         has_transform = False
+        has_translate = False
         xform_m = re.search(r'\btransform="([^"]*)"', tag)
         if xform_m:
             has_transform = True
@@ -678,11 +679,19 @@ def _sanitize_font_families(svg_text: str) -> str:
                 kind = op_m.group(1)
                 nums = [float(v) for v in op_m.group(2).replace(",", " ").split()]
                 if kind == "translate":
+                    has_translate = True
                     tx = nums[0] if len(nums) > 0 else 0
                     ty = nums[1] if len(nums) > 1 else 0
                 elif kind == "scale":
                     sx = nums[0] if len(nums) > 0 else 1
                     sy = nums[1] if len(nums) > 1 else 1
+            # Near-identity scales (residual editor stretch artifacts) shift
+            # each text relative to its untransformed siblings when baked.
+            # Treat |delta|<2% as identity: strip the transform so designer
+            # x/y coordinates are honoured verbatim.
+            if not has_translate and abs(sx - 1) < 0.02 and abs(sy - 1) < 0.02:
+                has_transform = False
+                sx = sy = 1.0
             # Apply to parent x/y
             x_m = re.search(r'\bx="([^"]+)"', tag)
             y_m = re.search(r'\by="([^"]+)"', tag)
