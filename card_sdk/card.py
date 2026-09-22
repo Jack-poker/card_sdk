@@ -140,8 +140,9 @@ svg.load_font_file(f"{base_dir}/fonts/FHLecturis-Bold.ttf")
 # Gilroy fonts used by BLUE_TOPBAR_CARD template — add font files to card_sdk/fonts/
 # NOTE: svg2pdf_py resolves font-family by a font's *internal* family name, not the
 # file name. Known internal names: "Minigap" (minigap.otf), "FH Lecturis"
-# (FHLecturis-Bold.ttf), "Gilroy" (Gilroy-*.ttf).
-_loaded_font_names = {"Minigap", "FH Lecturis"}
+# (FHLecturis-Bold.ttf), "Gilroy" (Gilroy-*.ttf), "Space Grotesk"
+# (SpaceGrotesk.otf).
+_loaded_font_names = {"Minigap", "FH Lecturis", "Space Grotesk"}
 for _gilroy in ("Gilroy-UltraBold.ttf", "Gilroy-Light.ttf"):
     try:
         svg.load_font_file(f"{base_dir}/fonts/{_gilroy}")
@@ -155,6 +156,11 @@ for _cc in ("CreditCard-26Me.ttf",):
         _loaded_font_names.add("Credit Card")
     except Exception:
         pass
+# Space Grotesk used by BANK_INSPIRE template text elements
+try:
+    svg.load_font_file(f"{base_dir}/fonts/SpaceGrotesk.otf")
+except Exception:
+    pass
 
 
 # ---------------------------------------------------------------------------
@@ -895,6 +901,11 @@ def _sanitize_font_families(svg_text: str) -> str:
 
     def _fix_text_fill(m):
         tag = m.group(0)
+        # Tspans should inherit fill from their parent <text>; forcing
+        # fill:#000000 here washes out the parent's colour/opacity.
+        # Only skip tspan if it carries no fill of its own.
+        if tag.lstrip().startswith("<tspan") and "fill" not in tag:
+            return tag
 
         def _to_solid(cm):
             colour = _first_gradient_colour(cm.group(1))
