@@ -1305,6 +1305,17 @@ def _substitute_format_anchors(svg_text: str, fmt_args: dict) -> str:
         name = name.group(1)
         value = _escape_xml_text(str(fmt_args[name])).replace("\n", "").replace("\r", "")
         tag = re.sub(r'data-format="[^"]*"', f' data-format="{{{name}}}"', tag, count=1)
+        # Overlay slots stand in for a drawn placeholder (stamp/signature/logo):
+        # without a real picture, drop the overlay so the template's own art
+        # stays; with one, replace the drew doodle the overlay stands in for.
+        replaces = re.search(r'\bdata-replaces="([^"]*)"', tag)
+        if not value.strip():
+            # Overlay slots stand in for a drawn placeholder (stamp/signature/
+            # logo): without a real picture, drop the overlay so the template's
+            # own art stays on the card (a blank href would blank the slot).
+            if replaces:
+                return ""
+            value = ""
         if re.search(r'xlink:href="', tag):
             tag = re.sub(r'xlink:href="[^"]*"', f'xlink:href="{value}"', tag, count=1)
         else:
@@ -1319,6 +1330,22 @@ def _substitute_format_anchors(svg_text: str, fmt_args: dict) -> str:
         r"<image\b[^>]*data-format=\"\{([A-Za-z_][\w]*)\}\"[^>]*?/>",
         image_sub, svg_text, flags=re.S,
     )
+    # An overlay slot that received a real picture stands in for a drawn
+    # (placeholder) doodle: drop that drawn path so the picture is not stacked
+    # on top of the template art. The doodle is the *element* the overlay
+    # nominates via ``data-replaces`` — removing it must happen at document
+    # scope, so it is done here rather than inside the per-element image_sub.
+    if "data-replaces=" in svg_text:
+        for img_m in re.finditer(
+            r'<image\b[^>]*\bdata-replaces="([^"]+)"[^>]*?/?>', svg_text
+        ):
+            tag = img_m.group(0)
+            if 'xlink:href="data:' not in tag and 'xlink:href="http' not in tag:
+                continue  # no picture supplied — keep the template's own art
+            svg_text = re.sub(
+                r'<path\b[^>]*\bid="' + re.escape(img_m.group(1)) + r'"[^>]*?/>',
+                '', svg_text, count=1,
+            )
     return svg_text
 
 
@@ -1511,21 +1538,22 @@ def generate_card(
     # variable wiring from a template's visible text (demo text freezes on every
     # card). Re-attach the anchors in-memory before rendering. This never writes
     # back to the template files, so the pushed design keeps its exact layout —
-    # no overlays inserted, no elements deleted, no coordinates touched.
+    # text coordinates stay put and image overlays sit on the placeholder
+    # doodle's own geometry.
     try:
         from card_sdk import template_variables as _tv
 
         _restore_svg_variables = _tv.restore_svg_variables
     except Exception:
-        _restore_svg_variables = lambda svg, _name: svg
+        _restore_svg_variables = lambda svg, _name, _face=None: svg
 
     with open(f"{base_dir}/templates/templates_base/{template_name}/front.card.kaascan", "r", encoding="utf-8") as f:
         _raw = _decode_urlencoded_placeholders(f.read())
-        front = _safe_format(_restore_svg_variables(_raw, template_name), fmt_args)
+        front = _safe_format(_restore_svg_variables(_raw, template_name, "front"), fmt_args)
 
     with open(f"{base_dir}/templates/templates_base/{template_name}/back.card.kaascan", "r", encoding="utf-8") as f:
         _raw = _decode_urlencoded_placeholders(f.read())
-        back = _safe_format(_restore_svg_variables(_raw, template_name), fmt_args)
+        back = _safe_format(_restore_svg_variables(_raw, template_name, "back"), fmt_args)
 
     # Per-role color override: side_2_color recolors the card *back* only, the
     # rest apply to both faces. Colors already on the template keep their own

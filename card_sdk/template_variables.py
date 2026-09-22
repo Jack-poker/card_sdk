@@ -150,15 +150,221 @@ def _ensure_overlay(svg: str, var: str, spec: dict):
     if any(m.group(1) == var for m in _IMAGE_SLOT_MARKER.finditer(svg)):
         return svg, False
     marker = "{" + var + "}"
+    replaces = spec.get("replaces", "")
     overlay = (
         f'<image id="slot-{var}" x="{spec["x"]}" y="{spec["y"]}" '
         f'width="{spec["w"]}" height="{spec["h"]}" '
-        f'preserveAspectRatio="{spec["pa"]}" data-format="{marker}"/>'
+        f'preserveAspectRatio="{spec["pa"]}" data-replaces="{replaces}" '
+        f'data-format="{marker}"/>'
     )
     if "</svg>" not in svg:
         return svg, False
     svg = svg.replace("</svg>", overlay + "</svg>", 1)
     return svg, True
+
+
+def _path_bbox(d: str, transform: str = ""):
+    """Drawn box ``(x0, y0, x1, y1)`` of an SVG path, in the element's own
+    coordinate frame (its transform already applied).
+
+    Editor exports use relative commands (``m``, ``c``, …) and a per-element
+    ``transform``; taking raw min/max of the numbers would be meaningless, so
+    the pen is walked in absolute coordinates. Returns ``None`` when nothing
+    can be resolved so callers fall back to configured geometry.
+    """
+    import math
+
+    tokens = re.findall(
+        r'[MmZzLlHhVvCcSsQqTtAa]|[-+]?(?:\d+\.\d+|\.\d+|\d+)(?:[eE][-+]?\d+)?',
+        d,
+    )
+    pts = []
+    x = y = sx = sy = 0.0
+    i, n, cmd = 0, len(tokens), None
+
+    def num():
+        nonlocal i
+        v = float(tokens[i]); i += 1
+        return v
+
+    while i < n:
+        t = tokens[i]
+        if len(t) == 1 and t.isalpha():
+            cmd = t; i += 1
+            if cmd in "Zz":
+                x, y = sx, sy
+                pts.append((x, y))
+                continue
+        if cmd is None:
+            i += 1
+            continue
+        rel = cmd.islower()
+        c = cmd.upper()
+        if c == "M":
+            px, py = num(), num()
+            x = x + px if rel else px
+            y = y + py if rel else py
+            sx, sy = x, y
+            pts.append((x, y))
+            cmd = "l" if rel else "L"
+        elif c == "L":
+            px, py = num(), num()
+            x = x + px if rel else px
+            y = y + py if rel else py
+            pts.append((x, y))
+        elif c == "H":
+            px = num(); x = x + px if rel else px
+            pts.append((x, y))
+        elif c == "V":
+            py = num(); y = y + py if rel else py
+            pts.append((x, y))
+        elif c == "C":
+            x1, y1, x2, y2, px, py = (num() for _ in range(6))
+            x1 = x + x1 if rel else x1; y1 = y + y1 if rel else y1
+            x2 = x + x2 if rel else x2; y2 = y + y2 if rel else y2
+            px = x + px if rel else px; py = y + py if rel else py
+            pts += [(x1, y1), (x2, y2), (px, py)]
+            x, y = px, py
+        elif c == "S":
+            x2, y2, px, py = (num() for _ in range(4))
+            x2 = x + x2 if rel else x2; y2 = y + y2 if rel else y2
+            px = x + px if rel else px; py = y + py if rel else py
+            pts += [(x2, y2), (px, py)]
+            x, y = px, py
+        elif c == "Q":
+            cx, cy, px, py = (num() for _ in range(4))
+            cx = x + cx if rel else cx; cy = y + cy if rel else cy
+            px = x + px if rel else px; py = y + py if rel else py
+            pts += [(cx, cy), (px, py)]
+            x, y = px, py
+        elif c == "T":
+            px, py = num(), num()
+            px = x + px if rel else px; py = y + py if rel else py
+            pts.append((px, py))
+            x, y = px, py
+        elif c == "A":
+            vals = [num() for _ in range(7)]
+            px, py = vals[5], vals[6]
+            px = x + px if rel else px; py = y + py if rel else py
+            pts.append((px, py))
+            x, y = px, py
+        else:
+            i += 1
+    if not pts:
+        return None
+
+    # Compose the element's transform (translate/scale/rotate/matrix) left to
+    # right as SVG does: point' = M · point.
+    def mul(M, N):
+        a1, b1, c1, d1, e1, f1 = M
+        a2, b2, c2, d2, e2, f2 = N
+        return (
+            a1 * a2 + c1 * b2, b1 * a2 + d1 * b2,
+            a1 * c2 + c1 * d2, b1 * c2 + d1 * d2,
+            a1 * e2 + c1 * f2 + e1, b1 * e2 + d1 * f2 + f1,
+        )
+
+    M = (1.0, 0.0, 0.0, 1.0, 0.0, 0.0)
+    for kind, raw in re.findall(r'(translate|scale|rotate|matrix)\s*\(([^)]*)\)', transform or ""):
+        args = [float(v) for v in re.findall(
+            r'[-+]?(?:\d+\.\d+|\.\d+|\d+)(?:[eE][-+]?\d+)?', raw)]
+        if kind == "translate":
+            op = (1, 0, 0, 1, args[0] if args else 0, args[1] if len(args) > 1 else 0)
+        elif kind == "scale":
+            sx_ = args[0] if args else 1
+            op = (sx_, 0, 0, args[1] if len(args) > 1 else sx_, 0, 0)
+        elif kind == "rotate":
+            a = math.radians(args[0] if args else 0)
+            R = (math.cos(a), -math.sin(a), math.sin(a), math.cos(a), 0, 0)
+            if len(args) >= 3:
+                cx, cy = args[1], args[2]
+                op = mul(mul((1, 0, 0, 1, cx, cy), R), (1, 0, 0, 1, -cx, -cy))
+            else:
+                op = R
+        else:  # matrix
+            op = tuple(args[:6]) if len(args) >= 6 else (1, 0, 0, 1, 0, 0)
+        M = mul(M, op)
+
+    a, b, c, dd, e, f = M
+    tx = [a * px + c * py + e for px, py in pts]
+    ty = [b * px + dd * py + f for px, py in pts]
+    return (min(tx), min(ty), max(tx), max(ty))
+
+
+def _doodle_box(svg: str, elem_id: str):
+    """``(x, y, w, h)`` of the drawn placeholder ``<path id=elem_id>`` — the
+    template's own geometry, so an overlay lands exactly where the design
+    draws the stamp / signature / logo. Falls back to ``None`` if not found.
+    """
+    m = re.search(
+        r'<path\b[^>]*\bid="' + re.escape(elem_id) + r'"[^>]*?/?>', svg
+    )
+    if not m:
+        return None
+    d_m = re.search(r'\bd="([^"]*)"', m.group(0))
+    if not d_m:
+        return None
+    tf_m = re.search(r'\btransform="([^"]*)"', m.group(0))
+    box = _path_bbox(d_m.group(1), tf_m.group(1) if tf_m else "")
+    if not box:
+        return None
+    x0, y0, x1, y1 = box
+    if x1 - x0 <= 0 or y1 - y0 <= 0:
+        return None
+    return (x0, y0, x1 - x0, y1 - y0)
+
+
+def _ensure_overlay_in_memory(svg: str, var: str, spec: dict):
+    """Attach an ``<image data-format="{var}">`` overlay, in memory.
+
+    Geometry comes from the template's own placeholder doodle (``spec
+    ["replaces"]``) when present so the picture sits exactly where the design
+    draws it; the configured spec box is the fallback. The overlay remembers
+    the doodle it stands in for (``data-replaces``): the renderer drops the
+    doodle only when a real picture is supplied, so a card without a stamp
+    still shows the template's own art. The file on disk is never touched.
+    """
+    if any(m.group(1) == var for m in _IMAGE_SLOT_MARKER.finditer(svg)):
+        return svg, False
+    if f'data-format="{{{var}}}"' in svg and re.search(
+        r'<image\b[^>]*data-format="\{' + re.escape(var) + r'\}"', svg
+    ):
+        return svg, False
+    replaces = spec.get("replaces", "")
+    box = _doodle_box(svg, replaces) if replaces else None
+    if box:
+        x, y, w, h = (f"{v:.6g}" for v in box)
+    else:
+        x, y, w, h = spec.get("x"), spec.get("y"), spec.get("w"), spec.get("h")
+    overlay = (
+        f'<image id="slot-{var}" x="{x}" y="{y}" '
+        f'width="{w}" height="{h}" '
+        f'preserveAspectRatio="{spec.get("pa", "xMidYMid meet")}" '
+        f'data-replaces="{replaces}" data-format="{{{var}}}"/>'
+    )
+    if "</svg>" not in svg:
+        return svg, False
+    svg = svg.replace("</svg>", overlay + "</svg>", 1)
+    return svg, True
+
+
+def _restore_image_slots_in_memory(svg: str, template_name: str, face=None):
+    """Wire every image variable of *face* into *svg* without writing files."""
+    slots = IMAGE_SLOTS.get(template_name, {}) or {}
+    for var, specs in slots.items():
+        for spec in specs:
+            if "faces" not in spec:
+                continue
+            faces = [f.strip() for f in (spec.get("faces") or "").split(",")]
+            if face and face not in faces:
+                continue
+            if _image_slot_wired(svg, var):
+                continue
+            if spec.get("type") == "anchor":
+                svg, _ = _ensure_anchor(svg, spec["id"], var)
+            else:
+                svg, _ = _ensure_overlay_in_memory(svg, var, spec)
+    return svg
 
 
 def _restore_image_slots(template_name: str) -> list:
@@ -243,35 +449,41 @@ def check_template(template_name: str) -> list:
     return missing
 
 
-def restore_svg_variables(svg: str, template_name: str) -> str:
-    """In-memory, structure-preserving re-wiring of demo-locked text nodes.
+def restore_svg_variables(svg: str, template_name: str, face: str = None) -> str:
+    """In-memory, structure-preserving re-wiring of a template face.
 
     Returns a patched SVG *string*; the template file on disk is never touched.
-    The only change made is adding a ``data-format`` attribute to a ``<text>``
-    open tag whose visible text matches a known demo slot but carries neither an
-    anchor nor a placeholder.  No overlay images are inserted and no element is
-    deleted, so the design keeps its exact layout.
+    Two kinds of healing happen here:
+
+    * demo-locked ``<text>`` nodes — a ``data-format`` attribute is added to an
+      unwired open tag (layout untouched);
+    * image slots — existing pictures get their anchor, and stamp / signature
+      / school-logo overlays are attached at the placeholder doodle's own
+      geometry (``data-replaces`` remembers the doodle so it is only dropped
+      when a real picture is supplied).
+
+    No coordinate is rewritten and no element other than the stand-in doodle
+    (image present only) is removed, so the pushed design keeps its layout.
 
     Used by the card renderer (``generate_card``); the disk-mutating CLI
     ``restore`` is a separate, explicit maintenance action.
     """
     slots = DEMO_SLOTS.get(template_name, {})
-    if not slots:
-        return svg
-    for var, demos in slots.items():
-        for block in _TEXT_NODE.findall(svg) or []:
-            text = _inner_text(block)
-            if text not in demos or text == "":
-                continue
-            if _ANCHOR.search(block) or _PLACEHOLDER.search(block):
-                continue  # already wired: nothing to restore
-            open_tag = _OPEN_TAG.match(block).group(0)
-            anchor = f' data-format="{{{var}}}"'
-            if anchor in _strip_attrs(block):
-                continue
-            new_open = open_tag[:-1] + anchor + ">"
-            svg = svg.replace(block, new_open + block[len(open_tag):], 1)
-    return svg
+    if slots:
+        for var, demos in slots.items():
+            for block in _TEXT_NODE.findall(svg) or []:
+                text = _inner_text(block)
+                if text not in demos or text == "":
+                    continue
+                if _ANCHOR.search(block) or _PLACEHOLDER.search(block):
+                    continue  # already wired: nothing to restore
+                open_tag = _OPEN_TAG.match(block).group(0)
+                anchor = f' data-format="{{{var}}}"'
+                if anchor in _strip_attrs(block):
+                    continue
+                new_open = open_tag[:-1] + anchor + ">"
+                svg = svg.replace(block, new_open + block[len(open_tag):], 1)
+    return _restore_image_slots_in_memory(svg, template_name, face)
 
 
 def restore_template_variables(template_name: str) -> list:
