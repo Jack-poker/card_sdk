@@ -141,8 +141,8 @@ svg.load_font_file(f"{base_dir}/fonts/FHLecturis-Bold.ttf")
 # NOTE: svg2pdf_py resolves font-family by a font's *internal* family name, not the
 # file name. Known internal names: "Minigap" (minigap.otf), "FH Lecturis"
 # (FHLecturis-Bold.ttf), "Gilroy" (Gilroy-*.ttf), "Space Grotesk"
-# (SpaceGrotesk.otf).
-_loaded_font_names = {"Minigap", "FH Lecturis", "Space Grotesk"}
+# (SpaceGrotesk.otf), "Z003" (Z003-MediumItalic.*).
+_loaded_font_names = {"Minigap", "FH Lecturis", "Space Grotesk", "Z003"}
 for _gilroy in ("Gilroy-UltraBold.ttf", "Gilroy-Light.ttf"):
     try:
         svg.load_font_file(f"{base_dir}/fonts/{_gilroy}")
@@ -161,6 +161,19 @@ try:
     svg.load_font_file(f"{base_dir}/fonts/SpaceGrotesk.otf")
 except Exception:
     pass
+# Z003 used by RUNO SCHOOL CARD. Only the Medium Italic cut ships with the SDK,
+# but the family name is all svg2pdf needs to stop dropping the text, so the
+# family is whitelisted and rendered in the cut we have. Both bundled files are
+# the same face, so first one that loads wins (rather than letting the last
+# loaded register decide which cut is used).
+for _z003 in ("Z003-MediumItalic.otf", "Z003-MediumItalic.ttf"):
+    try:
+        svg.load_font_file(f"{base_dir}/fonts/{_z003}")
+        break
+    except Exception:
+        continue
+else:
+    _loaded_font_names.discard("Z003")
 
 
 # ---------------------------------------------------------------------------
@@ -567,16 +580,34 @@ def _gradient_flatten(svg_text: str) -> str:
 
 
 def _sanitize_font_families(svg_text: str) -> str:
-    """Replace font-family references that svg2pdf can't resolve.
+    """Prepare a template for svg2pdf, leaving the design itself alone.
 
-    When ``svg2pdf_py`` encounters a ``font-family`` name not loaded in the
-    ``FontDatabase`` it silently drops **all** text from the entire SVG.
-    This function swaps out any unrecognised font names for a known fallback so
-    text is never lost.
+    Geometry is used exactly as authored. Only three things are touched, each
+    for a measured svg2pdf defect rather than for appearance:
 
-    The fallback is weight-aware: bold/Ultra-Bold text maps to the loaded bold
-    face (``FH Lecturis``) and normal text to ``Minigap``, otherwise bold styling
-    would be silently flattened to a regular weight.
+    1. Font families. When ``svg2pdf_py`` meets a ``font-family`` not loaded in
+       the ``FontDatabase`` it silently drops the text using that family (the
+       rest of the SVG still renders), so unknown families are swapped for a
+       known face. The fallback is weight-aware: bold/Ultra-Bold maps to
+       ``FH Lecturis``, normal text to ``Minigap``, otherwise bold styling
+       would be flattened to regular.
+
+    2. Page size. svg2pdf mis-resolves the CSS units on the root element
+       (``85.6mm`` and ``242.6pt`` both yield 323.5pt), so a card would print
+       4/3 oversize. The root width/height are rewritten as unitless point
+       values taken from the viewBox. This is a unit fix, not a layout change.
+
+    3. Gradient-filled text. svg2pdf paints gradient text with the gradient's
+       *last* stop, which turns the design's orange-to-white wordmark flat
+       white. Those runs are converted to outlines so the gradient survives.
+
+    Deliberately NOT done here: no baseline nudging, no per-font or per-element
+    offsets, no transform baking, no line-spacing guesses. Every one of those
+    was measured against the rendered PDF and found either unnecessary (svg2pdf
+    honours ``transform`` on ``<text>`` and CSS ``text-anchor`` correctly) or
+    actively harmful (a per-family baseline table displaced 23 elements per
+    face by up to 1.46mm). If a future fix seems to need one, verify the full
+    ancestor transform chain before concluding anything is misaligned.
     """
     _REGULAR = "Minigap"
     _BOLD = "FH Lecturis"
@@ -650,177 +681,7 @@ def _sanitize_font_families(svg_text: str) -> str:
 
     svg_text = re.sub(r"<text\b[^>]*>", _ensure_face, svg_text)
 
-    # Pass 2b: normalise text elements for svg2pdf compatibility.
-    # svg2pdf ignores text-anchor when set only in CSS style (needs XML attr),
-    # mishandles font-variant-position:sub, leaves editor scale transforms on
-    # <text> that shift the rendered position, and does not honour tspan x/y
-    # overrides for line breaks.  This pass applies at render time so the
-    # template SVG stays untouched.
-
-    def _fix_text_for_svg2pdf(m):
-        open_tag = m.group(1)
-        inner = m.group(2)
-        close_tag = m.group(3)
-        tag = open_tag
-
-        # Bake the transform into x/y coordinates instead of leaving it
-        # on the element — svg2pdf mishandles scale/rotate transforms on
-        # <text> elements, causing position drift vs the template editor.
-        sx = sy = tx = ty = 0.0
-        has_transform = False
-        xform_m = re.search(r'\btransform="([^"]*)"', tag)
-        if xform_m:
-            has_transform = True
-            xform_str = xform_m.group(1)
-            for op_m in re.finditer(
-                r'(translate|scale)\s*\(\s*([^)]+)\)', xform_str
-            ):
-                kind = op_m.group(1)
-                nums = [float(v) for v in op_m.group(2).replace(",", " ").split()]
-                if kind == "translate":
-                    tx = nums[0] if len(nums) > 0 else 0
-                    ty = nums[1] if len(nums) > 1 else 0
-                elif kind == "scale":
-                    sx = nums[0] if len(nums) > 0 else 1
-                    sy = nums[1] if len(nums) > 1 else 1
-            # Apply to parent x/y
-            x_m = re.search(r'\bx="([^"]+)"', tag)
-            y_m = re.search(r'\by="([^"]+)"', tag)
-            if x_m and y_m:
-                new_x = float(x_m.group(1)) * sx + tx
-                new_y = float(y_m.group(1)) * sy + ty
-                tag = tag[:x_m.start()] + f'x="{new_x:.6g}"' + tag[x_m.end():]
-                y_m2 = re.search(r'\by="([^"]+)"', tag)
-                if y_m2:
-                    tag = tag[:y_m2.start()] + f'y="{new_y:.6g}"' + tag[y_m2.end():]
-            tag = re.sub(r'\s*transform="[^"]*"', '', tag)
-
-        # font-variant-position:sub appears only on the multi-line "Iyi karita…"
-        # paragraph (both faces).  svg2pdf ignores it, but the template editor
-        # barely shifts that block either (it is a whole paragraph, not a real
-        # subscript), so no extra nudge is needed — adding one pushed those
-        # lines ~2pt below the design.
-        sub_offset = 0.0
-
-        # Baseline compensation: the same font measures a slightly different
-        # ascender in our bundled TTF/OTF (rendered by svg2pdf) than the
-        # template editor's rendering (Inkscape/Pango), so every glyph top
-        # comes out a bit lower than the design.  Lift y by the measured
-        # per-family delta (in em) so text sinks back onto the design line.
-        _BASELINE_DELTA_EM = {"gilroy": 0.15, "space grotesk": 0.045}
-        lift_mm = 0.0
-        fam_m = re.search(r'font-family:\s*["\']?([^";]+)', tag)
-        if fam_m:
-            delta = _BASELINE_DELTA_EM.get(fam_m.group(1).strip().lower(), 0.0)
-            if delta:
-                fs_u = re.search(r'font-size:\s*([\d.]+)(px|pt|mm)?', tag)
-                if fs_u:
-                    fs_val = float(fs_u.group(1))
-                    fs_unit = fs_u.group(2) or "px"
-                    # Both svg2pdf and the template editor scale these px
-                    # font sizes as if they were mm (1px renders as 1mm here),
-                    # so a px size and an mm size both map 1:1 onto the
-                    # mm-valued y coordinates.  Only pt needs shrinking.
-                    mm_per_unit = {"px": 1.0, "mm": 1.0, "pt": 1.0 / 2.83465}.get(fs_unit, 1.0)
-                    lift_mm = delta * fs_val * mm_per_unit
-        if lift_mm:
-            y_m4 = re.search(r'\by="([^"]+)"', tag)
-            if y_m4:
-                yv = float(y_m4.group(1)) - lift_mm
-                tag = (tag[:y_m4.start()]
-                       + f'y="{yv:.6g}"'
-                       + tag[y_m4.end():])
-
-        # Promote text-anchor from CSS style to XML attribute (svg2pdf only
-        # reads the XML attribute, not the CSS property).
-        anchor_m = re.search(r'text-anchor\s*:\s*([^;\s"]+)', tag)
-        if anchor_m:
-            val = anchor_m.group(1)
-            tag = re.sub(r'\btext-anchor\s*:\s*[^;\s"]+\s*;?', '', tag)
-            close_idx = tag.rfind('>')
-            tag = tag[:close_idx] + f' text-anchor="{val}"' + tag[close_idx:]
-
-        # If the text had a transform, bake it into child tspan x/y too.
-        # svg2pdf honours tspan x/y, so we keep the author's absolute line
-        # positions — re-splitting here would replace the designed line
-        # spacing with a heuristic.  The baseline lift applies to every line.
-        if has_transform and inner:
-            def _fix_tspan(ts_m):
-                ts_attrs = ts_m.group(1)
-                ts_text = ts_m.group(2)
-                tx_m = re.search(r'\bx="([^"]+)"', ts_attrs)
-                ty_m = re.search(r'\by="([^"]+)"', ts_attrs)
-                if tx_m and ty_m:
-                    nx = float(tx_m.group(1)) * sx + tx
-                    ny = float(ty_m.group(1)) * sy + ty + sub_offset - lift_mm
-                    ts_attrs = ts_attrs[:tx_m.start()] + f'x="{nx:.6g}"' + ts_attrs[tx_m.end():]
-                    ty_m2 = re.search(r'\by="([^"]+)"', ts_attrs)
-                    if ty_m2:
-                        ts_attrs = ts_attrs[:ty_m2.start()] + f'y="{ny:.6g}"' + ts_attrs[ty_m2.end():]
-                return f'<tspan{ts_attrs}>{ts_text}</tspan>'
-            inner = re.sub(r'<tspan\b([^>]*)>([^<]*)</tspan>', _fix_tspan, inner)
-
-        return tag + inner + close_tag
-
-    svg_text = re.sub(r'(<text\b[^>]*>)(.*?)(</text>)', _fix_text_for_svg2pdf, svg_text)
-
-    # Pass 2c: split multi-tspan <text> elements into separate <text> tags so
-    # each line renders independently (svg2pdf does not honour tspan y overrides
-    # for line breaks).  Only applies when tspans lack explicit x/y attrs
-    # (i.e. the editor handled visual wrapping).
-    _RE_TEXT_BLOCK = re.compile(
-        r'(<text\b[^>]*>)(.*?)(</text>)', re.DOTALL
-    )
-    _RE_TSPAN = re.compile(
-        r'<tspan\b([^>]*)>([^<]*)</tspan>', re.DOTALL
-    )
-
-    def _split_multiline(m):
-        open_tag = m.group(1)
-        inner = m.group(2)
-        close_tag = m.group(3)
-
-        tspans = _RE_TSPAN.findall(inner)
-        if len(tspans) <= 1:
-            return m.group(0)  # single tspan or no tspan — leave alone
-
-        # Check whether any tspan already has absolute x/y — if so, respect
-        # the author's positioning and don't split.
-        if any(' x=' in attrs or ' y=' in attrs for attrs, _ in tspans):
-            return m.group(0)
-
-        # Extract parent x, y and font-size.
-        px_m = re.search(r'\bx="([^"]+)"', open_tag)
-        py_m = re.search(r'\by="([^"]+)"', open_tag)
-        if not px_m or not py_m:
-            return m.group(0)
-        px = float(px_m.group(1))
-        py = float(py_m.group(1))
-
-        fs_m = re.search(r'font-size\s*:\s*([\d.]+)', open_tag)
-        font_size = float(fs_m.group(1)) if fs_m else 1.98825
-        line_height = font_size * 1.122
-
-        # Build one <text> per tspan.
-        # Keep all attributes from the parent <text> but give each its own y.
-        # Strip existing y from the opening tag so we don't duplicate it.
-        base_tag = re.sub(r'\s+y="[^"]*"', '', open_tag)
-        base_tag = base_tag.rstrip(">").rstrip()
-        parts = []
-        for i, (attrs, text) in enumerate(tspans):
-            if not text.strip():
-                continue
-            new_y = py + i * line_height
-            parts.append(
-                f'{base_tag} y="{new_y}">'
-                f'<tspan{attrs}>{text}</tspan>'
-                f'{close_tag}'
-            )
-        return ''.join(parts) if parts else m.group(0)
-
-    svg_text = _RE_TEXT_BLOCK.sub(_split_multiline, svg_text)
-
-    # Pass 3: every card side must render on a true CR80 page (85.6 × 54 mm =
+    # Page size: every card side must render on a true CR80 page (85.6 × 54 mm =
     # 242.6 × 153 pt @72dpi). svg2pdf resolves CSS units at 96 dpi, so a root
     # width="85.6mm" becomes 323.5 pt (a 114 × 72 mm page) — each card prints
     # 4/3 oversize. Rewrite the root width/height as unitless *point* values
@@ -842,130 +703,188 @@ def _sanitize_font_families(svg_text: str) -> str:
             )
             svg_text = svg_text[:svg_start] + root_tag + svg_text[root_end + 1:]
 
-    # Pass 4: gradient text -> flattened gradient paths (see module docs above).
-    # Runs before the solid-fill pass so url() fills are consumed here; anything
-    # left over (radial / objectBoundingBox gradients) is handled below.
+    # Gradient text -> flattened gradient paths (see module docs above).
+    # svg2pdf paints gradient-filled text with the gradient's last stop, which
+    # flattens the wordmark to solid white; outlining the run keeps the ramp.
     svg_text = _gradient_flatten(svg_text)
 
-    # Pass 5: svg2pdf (i) refuses gradient fills on text elements and
-    # (ii) ignores a bare `fill` attribute on text (it only reads the style).
-    # Gradients used on text are resolved to their first solid stop colour and
-    # any attribute fill is promoted into the style so colours always apply.
-    gradient_stops: dict[str, list[str]] = {}
-    gradient_attrs: dict[str, str] = {}
-    _GRAD_TAG = re.compile(
-        r"<(linear|radial)Gradient(?:\s[^>]*?)?/?>|"
-        r"</(?:linear|radial)Gradient>"
-    )
-
-    def _collect_gradients() -> None:
-        probe = 0
-        while True:
-            match = _GRAD_TAG.search(svg_text, probe)
-            if not match:
-                break
-            token = match.group(0)
-            if token.endswith("/>"):  # self-closed gradient (no body)
-                tag = token
-                gid = re.search(r'\bid="([^"]+)"', tag)
-                if gid:
-                    gradient_stops[gid.group(1)] = []
-                    gradient_attrs[gid.group(1)] = tag
-                probe = match.end()
-                continue
-            # opening tag: scan for its balanced closing tag, tolerating defs
-            # that *contain* nested gradient definitions.
-            depth = 1
-            segment_start = match.start()
-            scan = match.end()
-            while depth:
-                inner = _GRAD_TAG.search(svg_text, scan)
-                if not inner:
-                    depth = 0
-                    break
-                inner_token = inner.group(0)
-                if inner_token.endswith("/>"):
-                    pass
-                elif inner_token.startswith("</"):
-                    depth -= 1
-                else:
-                    depth += 1
-                scan = inner.end()
-            block = svg_text[segment_start:scan]
-            tag = block.split(">", 1)[0] + ">"
-            gid = re.search(r'\bid="([^"]+)"', tag)
-            if gid:
-                stops = re.findall(
-                    r"""<stop\b[^>]*?stop-color\s*:\s*([^;"'\s]+)""", block
-                ) or re.findall(r'''<stop\b[^>]*?stop-color="([^"]+)"''', block)
-                gradient_stops[gid.group(1)] = stops
-                gradient_attrs[gid.group(1)] = tag
-            probe = scan
-
-    _collect_gradients()
-
-    def _first_gradient_colour(gid: str) -> str | None:
-        seen: set[str] = set()
-
-        def _resolve(current: str) -> str | None:
-            if current in seen or current not in gradient_stops:
-                return None
-            seen.add(current)
-            href = re.search(
-                r'(?:xlink:)?href="[^"]*#([^"]+)"', gradient_attrs.get(current, "")
-            )
-            if href and gradient_stops[current]:
-                return gradient_stops[current][0]
-            if href:
-                return _resolve(href.group(1))
-            return gradient_stops[current][0] if gradient_stops[current] else None
-
-        return _resolve(gid)
-
-    def _fix_text_fill(m):
-        tag = m.group(0)
-        # Tspans should inherit fill from their parent <text>; forcing
-        # fill:#000000 here washes out the parent's colour/opacity.
-        # Only skip tspan if it carries no fill of its own.
-        if tag.lstrip().startswith("<tspan") and "fill" not in tag:
-            return tag
-
-        def _to_solid(cm):
-            colour = _first_gradient_colour(cm.group(1))
-            return f"fill:{colour}" if colour else cm.group(0)
-
-        tag = re.sub(r"fill\s*:\s*url\(\s*#([^)\"']+)\s*\)", _to_solid, tag)
-        if "fill:" not in tag:
-            fill_match = re.search(r'\bfill="([^"]*)"', tag)
-            if fill_match:
-                fill_value = fill_match.group(1)
-                if fill_value.startswith("url("):
-                    inner = re.search(r"#([^)]+)", fill_value)
-                    colour = _first_gradient_colour(inner.group(1)) if inner else None
-                    if colour is None:
-                        return tag
-                    fill_value = colour
-                tag = re.sub(r'\s+fill="[^"]*"', "", tag, count=1)
-                style_open = re.search(r"style=['\"]", tag)
-                if style_open:
-                    insert_at = style_open.end()
-                    tag = tag[:insert_at] + f"fill:{fill_value};" + tag[insert_at:]
-                else:
-                    if tag.rstrip().endswith("/>"):
-                        tag = tag.rstrip()[:-2] + f' style="fill:{fill_value}"/>'
-                    else:
-                        tag = tag[:-1] + f' style="fill:{fill_value}">'
-            elif 'style="' not in tag and "style='" not in tag:
-                if tag.rstrip().endswith("/>"):
-                    tag = tag.rstrip()[:-2] + f' style="fill:#000000"/>'
-                else:
-                    tag = tag[:-1] + ' style="fill:#000000">'
-        return tag
-
-    svg_text = re.sub(r"<(?:text|tspan)\b[^>]*>", _fix_text_fill, svg_text)
     return svg_text
 
+
+def _restore_root_size_mm(svg_text: str, template_root: str | None = None) -> str:
+    """Restore the root ``width``/``height`` to millimetres (the template's own).
+
+    ``_sanitize_font_families`` rewrites the root ``width``/``height`` from
+    ``85.6mm`` to a unitless *point* value (``242.646``) so ``svg2pdf_py`` — which
+    resolves CSS units at 96 dpi and would otherwise print the card 4/3 oversize —
+    produces the correct physical page. That mutation is a render-time detail only:
+    it must never leak into a saved file. A bare ``242.646`` reads as 242.6 px to
+    Inkscape, browsers and batch tools (2.83 times too big, art re-scaled and
+    shifted).
+
+    ``template_root`` is the corresponding *un-sanitised* (or raw template) text;
+    when given, its exact ``width``/``height`` attributes are copied verbatim so
+    the saved file carries the design's own numbers (e.g. ``87.94735mm``). Without
+    it the values are re-derived from the viewBox. The in-memory copy fed to the
+    PDF renderer always keeps the point values.
+    """
+    svg_start = svg_text.find("<svg")
+    root_end = svg_text.find(">", svg_start if svg_start != -1 else 0)
+    if root_end == -1 or svg_start == -1:
+        return svg_text
+    root_tag = svg_text[svg_start: root_end + 1]
+
+    src_start = template_root.find("<svg") if template_root else -1
+    if src_start != -1:
+        src_end = template_root.find(">", src_start)
+        if src_end != -1:
+            src_tag = template_root[src_start: src_end + 1]
+            w = re.search(r'\bwidth="[^"]*"', src_tag)
+            h = re.search(r'\bheight="[^"]*"', src_tag)
+            if w and h:
+                root_tag = re.sub(r'\bwidth="[^"]*"', w.group(0), root_tag, count=1)
+                root_tag = re.sub(r'\bheight="[^"]*"', h.group(0), root_tag, count=1)
+                return svg_text[:svg_start] + root_tag + svg_text[root_end + 1:]
+
+    vb_m = re.search(
+        r'\bviewBox="\s*([\d.-]+)[\s,]+([\d.-]+)[\s,]+([\d.-]+)[\s,]+([\d.-]+)"',
+        root_tag,
+    )
+    if not vb_m:
+        return svg_text
+    w = f"{float(vb_m.group(3)):.6g}mm"
+    h = f"{float(vb_m.group(4)):.6g}mm"
+    root_tag = re.sub(r'\bwidth="[^"]*"', f'width="{w}"', root_tag, count=1)
+    root_tag = re.sub(r'\bheight="[^"]*"', f'height="{h}"', root_tag, count=1)
+    return svg_text[:svg_start] + root_tag + svg_text[root_end + 1:]
+
 # defined just variables for the student data
+
+
+def _pretty_svg(svg_text: str, indent_size: int = 2) -> str:
+    """Pretty-print an SVG for reading in an editor (VSCode, Inkscape).
+
+    The template files arrive as single very long lines, which defeats XML
+    syntax highlighting and inline preview. This inserts newlines + indentation
+    between XML *nodes only* — attribute values, ``<text>/<tspan>/<style>/
+    <script>`` content, comments, CDATA and the base64 payloads are copied
+    through byte-for-byte, so the formatted file is semantically identical (only
+    whitespace-only text nodes between elements are added, which SVG ignores).
+    """
+    _PROTECTED = {
+        "text", "tspan", "style", "script", "title", "desc",
+        "textPath", "flowPara",
+    }
+
+    if not svg_text.lstrip().startswith("<"):
+        return svg_text
+
+    out = []
+    stack = []  # dicts: {"name": str, "textual": bool}
+    pending = []  # whitespace chars since the last node
+    n = len(svg_text)
+    i = 0
+    first = True
+    predeclared = bool(re.search(r"<\?xml\b", svg_text[:200]))
+
+    def special() -> bool:
+        return bool(stack and (stack[-1]["name"] in _PROTECTED or stack[-1]["textual"]))
+
+    def newline(depth):
+        out.append("\n")
+        out.append(" " * (depth * indent_size))
+
+    def emit_node(text, depth):
+        nonlocal first
+        if special():
+            for ch in pending:
+                out.append(ch)
+        elif not first:
+            newline(depth)
+        elif depth == 0:
+            pass  # root: nothing before it
+        pending.clear()
+        out.append(text)
+        first = False
+
+    while i < n:
+        ch = svg_text[i]
+        if ch == "<":
+            # Comment: copy verbatim, format as a leaf node.
+            if svg_text.startswith("<!--", i):
+                end = svg_text.find("-->", i)
+                end = n if end == -1 else end + 3
+                emit_node(svg_text[i:end], len(stack))
+                i = end
+                continue
+            # CDATA: behaves like text content (never formatted inside).
+            if svg_text.startswith("<![CDATA[", i):
+                end = svg_text.find("]]>", i)
+                end = n if end == -1 else end + 3
+                emit_node(svg_text[i:end], len(stack))
+                if stack:
+                    stack[-1]["textual"] = True
+                i = end
+                continue
+            # Processing instruction / XML declaration.
+            if svg_text.startswith("<?", i):
+                end = svg_text.find("?>", i)
+                end = n if end == -1 else end + 2
+                emit_node(svg_text[i:end], len(stack))
+                i = end
+                continue
+            # Generic tag. Respect quotes so a '>' inside an attribute value
+            # (style=, href=) is not mistaken for the end of the tag.
+            j = i + 1
+            quote = None
+            end = -1
+            while j < n:
+                c = svg_text[j]
+                if quote:
+                    if c == quote:
+                        quote = None
+                elif c in "\"'":
+                    quote = c
+                elif c == ">":
+                    end = j
+                    break
+                j += 1
+            if end == -1:
+                emit_node(svg_text[i:], len(stack))
+                break
+            tag = svg_text[i:end + 1]
+            is_end = tag.startswith("</")
+            name = re.match(r"<[/]?([\w.-]+)", tag)
+            name = name.group(1) if name else ""
+            self_closing = tag.rstrip().endswith("/>")
+            if is_end:
+                emit_node(tag, len(stack) - 1)
+                if stack:
+                    stack.pop()
+            elif self_closing:
+                emit_node(tag, len(stack))
+            else:
+                emit_node(tag, len(stack))
+                stack.append({"name": name, "textual": False})
+            i = end + 1
+            continue
+
+        # Ordinary text between nodes.
+        if ch.isspace():
+            pending.append(ch)
+        else:
+            emit_node(ch, len(stack))
+            if stack:
+                stack[-1]["textual"] = True
+        i += 1
+
+    # Deterministic document header (harmless, and lets editors tag the file).
+    result = "".join(out)
+    if not predeclared:
+        result = '<?xml version="1.0" encoding="UTF-8"?>\n' + result
+    if not result.endswith("\n"):
+        result += "\n"
+    return result
 
 
 class Student(BaseModel):
@@ -975,7 +894,7 @@ class Student(BaseModel):
     school_name: str
     data_qrcode: str = ""  # optional: empty dict "{}" when the card uses a barcode instead
     student_id: str
-    student_code: str = ""  # student code / card number, e.g. "5298 7601 2345 6789"
+    student_code: int  # student code / card number, e.g. "5298 7601 2345 6789"
     valid_thru: str = "09/30"  # card validity/expiry shown under "VALID THRU"
     school_type: str = "HIGH SCHOOL"  # school category, e.g. "HIGH SCHOOL"
     slogan: str = ""  # school motto/slogan shown under the school name
@@ -988,10 +907,16 @@ class Student(BaseModel):
     school_logo: Optional[str] = None  # Base64 encoded school logo
     director_name: str = ""  # school head / director name (back of the card)
     director_contact: str = ""  # director contact shown next to the name
+    school_name_font_size: float = 0.0  # mm +/- delta, both faces; 0 = authored
+    school_name_font_size_front: Optional[float] = None  # front-only delta (overrides shared)
+    school_name_font_size_back: Optional[float] = None  # back-only delta (overrides shared)
+    student_name_font_size: float = 0.0  # mm +/- delta, both faces; 0 = authored
+    student_name_font_size_front: Optional[float] = None  # front-only delta
+    student_name_font_size_back: Optional[float] = None  # back-only delta
+    student_class_font_size: float = 0.0  # mm +/- delta, both faces; 0 = authored
+    student_class_font_size_front: Optional[float] = None  # front-only delta
+    student_class_font_size_back: Optional[float] = None  # back-only delta
     side_2_color: str = "#00897B"  # Card back color
-    snFontsize: float = 2.4932  # Student name font size
-    snx: float = -10.523738  # Student name x axis position
-    sny: float = -0.8769781  # Student name y axis position
     color: Optional[str] = None  # primary/brand color override
     background_color: Optional[str] = None  # card body background override
     accent_color: Optional[str] = None  # secondary accent override
@@ -1036,11 +961,6 @@ class CardConfig(BaseModel):
     # Back-of-the-card school head (director) info
     director_name: str = ""  # school head / director name
     director_contact: str = ""  # director contact shown next to the name
-    
-# Typography settings
-    snFontsize: float = 2.4932  # Student name font size
-    snx: float = -10.523738  # Student name x axis position
-    sny: float = -0.8769781  # Student name y axis position
 
     # Card color overrides (None keeps the template's own colors)
     color: Optional[str] = None  # primary/brand color
@@ -1068,9 +988,6 @@ class CardConfig(BaseModel):
             barcode=self.barcode,
             school_logo=self.school_logo,
             side_2_color=self.side_2_color,
-            snFontsize=self.snFontsize,
-            snx=self.snx,
-            sny=self.sny,
             director_name=self.director_name,
             director_contact=self.director_contact,
             color=self.color,
@@ -1099,9 +1016,6 @@ class CardConfig(BaseModel):
             stamp_base64=self.stamp,
             student_barcode=self.barcode,
             signature_base64=self.signature,
-            snFontsize=self.snFontsize,
-            snx=self.snx,
-            sny=self.sny,
             director_name=self.director_name,
             director_contact=self.director_contact,
             color=self.color,
@@ -1178,6 +1092,18 @@ def save_card(card_content: dict, card_id: str, class_folder: str, school_name: 
 
     # Render both faces straight from the in-memory SVG strings — no wasted
     # disk write + re-read of every card's template files.
+    #
+    # The file on disk keeps the template's millimetre width/height; the
+    # in-memory copy handed to the PDF renderer carries the point-valued
+    # root size (see _restore_root_size_mm). It is also pretty-printed so it
+    # reads well in an editor (one-line SVGs defeat highlighting/preview).
+    with open(f"{base_dir}/svg_outputs/front_{card_id}_svg_template.svg","w+") as svg_file:
+        svg_file.write(_pretty_svg(_restore_root_size_mm(front_card, card_templates["front"]["card"])))
+
+    with open(f"{base_dir}/svg_outputs/back_{card_id}_svg_template.svg","w+") as svg_file:
+        svg_file.write(_pretty_svg(_restore_root_size_mm(back_card, card_templates["back"]["card"])))
+
+    print(f"svg output: {front_card}")
     try:
         pdf_pages = svg2pdf_py.svg_pages_to_pdfs([front_card, back_card], svg)
     except Exception as error:
@@ -1215,7 +1141,79 @@ def _decode_urlencoded_placeholders(svg_text: str) -> str:
     return svg_text.replace("%7B", "{").replace("%7D", "}")
 
 
-def _safe_format(svg_text: str, fmt_args: dict) -> str:
+def _apply_font_size_override(svg_text: str, fmt_args: dict, face: str = "front") -> str:
+    """Resize specific fields by a +/- delta, changing **content fit only**.
+
+    A field on an unclipped line can overflow once its value gets long; the fix
+    is to shrink the font size (or grow it when the slot is small), keeping the
+    anchor's x/y/transform untouched. For each configurable field the deltas
+    (mm) apply against the template's authored size — ``0`` (the default) keeps
+    the authored size, negative shrinks, positive grows:
+
+    * ``<field>_font_size``         — shared: applies to both faces
+    * ``<field>_font_size_front``   — overrides the shared value on the front
+    * ``<field>_font_size_back``    — overrides the shared value on the back
+
+    Configurable fields and the variables they resolve: ``school_name``
+    (``{school_name}``), ``student_name`` (``{student_names}``/``{name}``),
+    ``student_class`` (``{student_class}``/``{Class}``), as either a
+    ``data-format`` anchor or an inline run. The override adjusts every
+    ``font-size`` in a matching block — tspan size decorations included — so the
+    rendered line actually honours the requested size on any renderer; every
+    other element keeps its authored size byte-for-byte.
+    """
+    # field -> variable names whose <text> blocks hold that field's value
+    fields = {
+        "school_name": ("school_name",),
+        "student_name": ("student_names", "name"),
+        "student_class": ("student_class", "Class"),
+    }
+
+    deltas = []
+    for field, names in fields.items():
+        delta = fmt_args.get(f"{field}_font_size_{face}")
+        if delta is None:
+            delta = fmt_args.get(f"{field}_font_size")
+        if delta is None:
+            continue
+        try:
+            delta = float(delta)
+        except (TypeError, ValueError):
+            continue
+        if delta == 0:
+            continue
+        deltas.append((names, delta))
+    if not deltas:
+        return svg_text
+
+    def is_target(block: str) -> float:
+        for names, d in deltas:
+            if any(
+                f'data-format="{n}"' in block or "{{{n}}}".format(n=n) in block
+                for n in names
+            ):
+                return d
+        return 0.0
+
+    def patch(m):
+        block = m.group(0)
+        delta = is_target(block)
+        if delta == 0.0:
+            return block
+
+        def _fs(fm):
+            try:
+                new = round(float(fm.group(1)) + delta, 4)
+            except ValueError:
+                return fm.group(0)
+            return f"font-size:{max(new, 0.1)}px"
+
+        return re.sub(r"font-size:([\d.]+)(px)", _fs, block)
+
+    return re.sub(r"<text\b[^>]*>.*?</text>", patch, svg_text, flags=re.S)
+
+
+def _safe_format(svg_text: str, fmt_args: dict, face: str = "front") -> str:
     """Substitute ``{name}`` placeholders for the supplied keys, leaving any
     other ``{...}`` group intact.
 
@@ -1255,6 +1253,7 @@ def _safe_format(svg_text: str, fmt_args: dict) -> str:
     # keeps ``data-format="{name}"`` braces alive while still substituting
     # inline ``{name}`` text and ``xlink:href="../{name}"``.
     svg_text = _substitute_format_anchors(svg_text, fmt_args)
+    svg_text = _apply_font_size_override(svg_text, fmt_args, face)
     return re.sub(r"(?<!data-format=\")(\.\./|\./)?\{([A-Za-z_][\w]*)\}", sub, svg_text)
 
 
@@ -1292,7 +1291,10 @@ def _substitute_format_anchors(svg_text: str, fmt_args: dict) -> str:
         # their per-line geometry) and never insert a bare run ahead of them.
         tsp = re.search(r"(<tspan\b[^>]*>)(.*?)(</tspan>)", inner, flags=re.S)
         if tsp:
-            inner = tsp.group(1) + value + tsp.group(3) + inner[tsp.end():]
+            # Swap only the tspan text run. Keep everything before the first
+            # tspan byte-for-byte: that run is authored whitespace under
+            # xml:space="preserve" and must survive generation untouched.
+            inner = inner[:tsp.start()] + tsp.group(1) + value + tsp.group(3) + inner[tsp.end():]
         else:
             inner = re.sub(r"(?s)^(\s*)([^<]+)", lambda g: g.group(1) + value, inner, count=1)
         return open_tag + inner + "</text>"
@@ -1461,6 +1463,166 @@ def _resolve_color_overrides(template_name: str, *, color, background_color, acc
     return resolved
 
 
+def _ensure_barcode_image(student_code, student_barcode):
+    """The barcode always carries the *digits* of the student code.
+
+    Never a UUID or a raw id. If no real barcode image was supplied (or the
+    supplied one looks like a UUID, which its dashes betray), generate it here
+    from the student code so the card never shows a non-digit value.
+    """
+    if student_barcode and str(student_barcode).strip() and "-" not in student_barcode:
+        return student_barcode
+    from card_sdk.base64qrcode import base64_barcode
+
+    _digits = re.sub(r"[^0-9]", "", str(student_code or ""))
+    if _digits:
+        return base64_barcode({"code": _digits})
+    return student_barcode
+
+
+def build_card_fmt_args(
+    *,
+    student_name="",
+    student_class="",
+    school_name="",
+    student_id="",
+    student_code="",
+    valid_thru="",
+    school_type="",
+    school_slogan="",
+    school_logo="",
+    image_base64="",
+    side_2_color="",
+    data_qrcode="",
+    stamp_base64="",
+    student_barcode="",
+    signature_base64="",
+    director_name="",
+    director_contact="",
+    school_name_font_size=0,
+    school_name_font_size_front=None,
+    school_name_font_size_back=None,
+    student_name_font_size=0,
+    student_name_font_size_front=None,
+    student_name_font_size_back=None,
+    student_class_font_size=0,
+    student_class_font_size_front=None,
+    student_class_font_size_back=None,
+) -> dict:
+    """The one ``{variable} -> value`` map every card render fills from.
+
+    Both render paths (SINGLE via ``generate_card``, MULTIPLE via
+    ``card_agent._render_card_worker``) build their fill values here, so a
+    variable can never be applied on one path and silently dropped on the
+    other. A missing key here is a variable that never reaches the card, so
+    every card variable the templates know about is present.
+
+    ``school_name_font_size`` (mm, default 0 = keep the template's authored
+    size) is a +/- delta applied to the school-name font size on the finished
+    card without moving that slot — a long school name is fit by shrinking its
+    type (negative), a short one boosted by growing it (positive). It applies to
+    both faces; ``school_name_font_size_front`` / ``school_name_font_size_back``
+    override it per face. ``student_name_font_size`` / ``student_class_font_size``
+    behave identically for the student name and the grade.
+    """
+    return {
+        "color": "#0d0000",
+        "academic_year": f"ACADEMIC YEAR {datetime.now().year}",
+        "school_subtitle": "subtitle here",
+        "name": _fmt(student_name),
+        "student_names": _fmt(student_name),
+        "Class": _fmt(student_class),
+        "student_class": _fmt(student_class),
+        "school_name": _fmt(school_name),
+        "student_id": _fmt(student_id),
+        "student_code": _fmt(student_code),
+        "valid_thru": _fmt(valid_thru),
+        "school_type": _fmt(school_type),
+        "school_slogan": _fmt(school_slogan),
+        "school_logo": _img_href(school_logo),
+        "image_base64": _img_href(image_base64),
+        "student_photo": _img_href(image_base64),
+        "side_2_color": _fmt(side_2_color) or "#00897B",
+        "data_qrcode": _img_href(data_qrcode),
+        "stamp_base64": _img_href(stamp_base64),
+        "student_barcode": _img_href(student_barcode),
+        "signature_base64": _img_href(signature_base64),
+        "director_name": _fmt(director_name),
+        "director_contact": _fmt(director_contact),
+        "school_name_font_size": school_name_font_size,
+        "school_name_font_size_front": school_name_font_size_front,
+        "school_name_font_size_back": school_name_font_size_back,
+        "student_name_font_size": student_name_font_size,
+        "student_name_font_size_front": student_name_font_size_front,
+        "student_name_font_size_back": student_name_font_size_back,
+        "student_class_font_size": student_class_font_size,
+        "student_class_font_size_front": student_class_font_size_front,
+        "student_class_font_size_back": student_class_font_size_back,
+    }
+
+
+# Cache of prepared template faces: raw file → URL-decoded → variable wiring
+# re-attached. Keyed by the file's (size, mtime) so a CardFly/Inkscape save is
+# picked up immediately, and by (template, face) since the restore is
+# per-template. Only the *substitution* depends on the student, so every card
+# after the first reuses this and skips the whole repair pass.
+_PREPARED_FACE_CACHE: dict = {}
+_PREPARED_FACE_CACHE_MAX = 64
+
+
+def _prepared_face(template_name: str, face: str) -> str:
+    """Template *face* with its variables wired, ready for ``_safe_format``."""
+    path = pathlib.Path(
+        f"{base_dir}/templates/templates_base/{template_name}/{face}.card.kaascan"
+    )
+    stat = path.stat()
+    key = (str(path), stat.st_size, stat.st_mtime_ns)
+
+    cached = _PREPARED_FACE_CACHE.get(key)
+    if cached is not None:
+        return cached
+
+    raw = _decode_urlencoded_placeholders(path.read_text(encoding="utf-8"))
+    try:
+        from card_sdk import template_variables as _tv
+
+        raw = _tv.restore_svg_variables(raw, template_name, face)
+    except Exception:
+        pass
+
+    if len(_PREPARED_FACE_CACHE) >= _PREPARED_FACE_CACHE_MAX:
+        _PREPARED_FACE_CACHE.clear()
+    _PREPARED_FACE_CACHE[key] = raw
+    return raw
+
+
+def clear_template_cache() -> None:
+    """Forget every prepared template face (after editing a template)."""
+    _PREPARED_FACE_CACHE.clear()
+
+
+def render_card_svgs(template_name: str, fmt_args: dict) -> dict:
+    """Fill both faces of *template_name* with *fmt_args*, in memory.
+
+    Auto-heal: an Inkscape save / CardFly round-trip / re-export can strip the
+    variable wiring from a template's visible text, leaving the design's demo
+    text frozen on every card. ``restore_svg_variables`` re-attaches the
+    ``data-format`` anchors in memory before substitution, so a template that
+    has drifted still renders the real student data. The template files on disk
+    are never written, so the pushed design keeps its exact layout — text
+    coordinates stay put and image overlays sit on the placeholder doodle's own
+    geometry.
+
+    Every render path must go through here: skipping the restore step is what
+    made MULTIPLE generation print the template's demo data instead of the
+    student's.
+    """
+    return {
+        face: _safe_format(_prepared_face(template_name, face), fmt_args, face)
+        for face in ("front", "back")
+    }
+
+
 def generate_card(
     template_name: str,
     image_base64: str,
@@ -1488,72 +1650,50 @@ def generate_card(
     signature_base64: str = "",
     director_name: str = "",  # school head / director name (back of the card)
     director_contact: str = "",  # director contact shown next to the name
-    # styling
-    snFontsize=2.4932,  # student name font size
-    snx=-10.523738,  # student name x axis position
-    sny=-0.8769781,  # student name y axis position
+    school_name_font_size: float = 0,  # mm +/- delta, both faces; 0 = authored
+    school_name_font_size_front=None,  # mm +/- delta for the front only (overrides shared)
+    school_name_font_size_back=None,  # mm +/- delta for the back only (overrides shared)
+    student_name_font_size: float = 0,  # mm +/- delta, both faces; 0 = authored
+    student_name_font_size_front=None,  # front-only delta (overrides shared)
+    student_name_font_size_back=None,  # back-only delta (overrides shared)
+    student_class_font_size: float = 0,  # mm +/- delta, both faces; 0 = authored
+    student_class_font_size_front=None,  # front-only delta (overrides shared)
+    student_class_font_size_back=None,  # back-only delta (overrides shared)
 ) -> str:  # the card content is a string so it has a string return type declared
 
-    # The barcode always carries the *digits* of the student code — never a
-    # UUID or a raw id. If no real barcode image was supplied (or the supplied
-    # one looks like a UUID, which its dashes betray), generate it here from
-    # the student code so the card never shows a non-digit value.
-    if not (student_barcode and str(student_barcode).strip() and "-" not in student_barcode):
-        from card_sdk.base64qrcode import base64_barcode
+    student_barcode = _ensure_barcode_image(student_code, student_barcode)
 
-        _digits = re.sub(r"[^0-9]", "", str(student_code or ""))
-        if _digits:
-            student_barcode = base64_barcode({"code": _digits})
+    fmt_args = build_card_fmt_args(
+        student_name=student_name,
+        student_class=student_class,
+        school_name=school_name,
+        student_id=student_id,
+        student_code=student_code,
+        valid_thru=valid_thru,
+        school_type=school_type,
+        school_slogan=school_slogan,
+        school_logo=school_logo,
+        image_base64=image_base64,
+        side_2_color=side_2_color,
+        data_qrcode=data_qrcode,
+        stamp_base64=stamp_base64,
+        student_barcode=student_barcode,
+        signature_base64=signature_base64,
+        director_name=director_name,
+        director_contact=director_contact,
+        school_name_font_size=school_name_font_size,
+        school_name_font_size_front=school_name_font_size_front,
+        school_name_font_size_back=school_name_font_size_back,
+        student_name_font_size=student_name_font_size,
+        student_name_font_size_front=student_name_font_size_front,
+        student_name_font_size_back=student_name_font_size_back,
+        student_class_font_size=student_class_font_size,
+        student_class_font_size_front=student_class_font_size_front,
+        student_class_font_size_back=student_class_font_size_back,
+    )
 
-    fmt_args = {
-        "color": "#0d0000",
-        "academic_year": f"ACADEMIC YEAR {datetime.now().year}",
-        "school_subtitle": "subtitle here",
-        "snFontsize": _fmt(snFontsize),
-        "name": _fmt(student_name),
-        "student_names": _fmt(student_name),
-        "snx": _fmt(snx),
-        "sny": _fmt(sny),
-        "Class": _fmt(student_class),
-        "student_class": _fmt(student_class),
-        "school_name": _fmt(school_name),
-        "student_id": _fmt(student_id),
-        "student_code": _fmt(student_code),
-        "valid_thru": _fmt(valid_thru),
-        "school_type": _fmt(school_type),
-        "school_slogan": _fmt(school_slogan),
-        "school_logo": _img_href(school_logo),
-        "image_base64": _img_href(image_base64),
-        "student_photo": _img_href(image_base64),
-        "side_2_color": _fmt(side_2_color) or "#00897B",
-        "data_qrcode": _img_href(data_qrcode),
-        "stamp_base64": _img_href(stamp_base64),
-        "student_barcode": _img_href(student_barcode),
-        "signature_base64": _img_href(signature_base64),
-        "director_name": _fmt(director_name),
-        "director_contact": _fmt(director_contact),
-    }
-
-    # Auto-heal: an Inkscape save / CardFly round-trip / re-export can strip the
-    # variable wiring from a template's visible text (demo text freezes on every
-    # card). Re-attach the anchors in-memory before rendering. This never writes
-    # back to the template files, so the pushed design keeps its exact layout —
-    # text coordinates stay put and image overlays sit on the placeholder
-    # doodle's own geometry.
-    try:
-        from card_sdk import template_variables as _tv
-
-        _restore_svg_variables = _tv.restore_svg_variables
-    except Exception:
-        _restore_svg_variables = lambda svg, _name, _face=None: svg
-
-    with open(f"{base_dir}/templates/templates_base/{template_name}/front.card.kaascan", "r", encoding="utf-8") as f:
-        _raw = _decode_urlencoded_placeholders(f.read())
-        front = _safe_format(_restore_svg_variables(_raw, template_name, "front"), fmt_args)
-
-    with open(f"{base_dir}/templates/templates_base/{template_name}/back.card.kaascan", "r", encoding="utf-8") as f:
-        _raw = _decode_urlencoded_placeholders(f.read())
-        back = _safe_format(_restore_svg_variables(_raw, template_name, "back"), fmt_args)
+    faces = render_card_svgs(template_name, fmt_args)
+    front, back = faces["front"], faces["back"]
 
     # Per-role color override: side_2_color recolors the card *back* only, the
     # rest apply to both faces. Colors already on the template keep their own
@@ -1596,9 +1736,13 @@ def generate_card(
         if not (raw and str(raw).strip())
         and not (name == "data_qrcode" and student_barcode and str(student_barcode).strip())
     ]
+    # Cards are named by the *student_code* (the card number); fall back to
+    # student_id only when no code was supplied.
+    card_code = str(student_code or "").strip() or student_id
+
     if _missing:
         report_missing(
-            card_id=student_id,
+            card_id=card_code,
             school_name=school_name,
             student_class=student_class,
             missing=_missing,
@@ -1611,14 +1755,14 @@ def generate_card(
 
     save_card(
         card_content,
-        card_id=student_id,
+        card_id=card_code,
         class_folder=student_class,
         school_name=school_name,
     )
 
     from card_sdk.terminal_kid import Tkd
 
-    Tkd.inform_user(f"[ok] {student_id[:5]} card saved ::")
+    Tkd.inform_user(f"[ok] {card_code[:5]} card saved ::")
     Tkd.hello()
     print(color_text(text="(saving cards) Please wait...", color="blue"))
 
@@ -1765,52 +1909,53 @@ async def async_image_url_to_base64(
     Returns:
         Base64 encoded data URL or None if failed
     """
-    try:
 
-        # GET the image with timeout
+    async def _fetch() -> Optional[str]:
         async with session.get(
-            image_url, timeout=aiohttp.ClientTimeout(total=200)
+            image_url,
+            timeout=aiohttp.ClientTimeout(
+                connect=10, sock_connect=10, sock_read=60, total=90
+            ),
         ) as response:
 
             # Check if request was successful
             if response.status != 200:
                 print(f"[*] HTTP Error: {response.status} for {image_url}")
                 return None
-            else:
 
-                from card_sdk.card_agent import count_cards
+            from card_sdk.card_agent import count_cards
 
-                inc = count_cards()
+            inc = count_cards()
 
-                from card_sdk.terminal_kid import Tkd
+            from card_sdk.terminal_kid import Tkd
 
-                with open(f"{base_dir}/report/users.json") as users_report:
-                    total_users = json.loads(users_report.read())["total_users"]
+            with open(f"{base_dir}/report/users.json") as users_report:
+                total_users = json.loads(users_report.read())["total_users"]
 
-                Tkd.inform_user(
-                    f"{color_text(user_id[:4],"green")}"
+            Tkd.inform_user(
+                f"{color_text(user_id[:4],"green")}"
+                + color_text(
+                    "... Generating user profile photo format=Baseb64 \n _________________________________________________________________________",
+                    "dark_grey",
+                )
+            )
+            Tkd.hello()
+
+            print(
+                color_text(
+                    f"\n [-] Please wait ....                       "
                     + color_text(
-                        "... Generating user profile photo format=Baseb64 \n _________________________________________________________________________",
-                        "dark_grey",
+                        f"{(total_users - inc)} students / {total_users} students",
+                        "green",
                     )
+                    + "\n",
+                    "yellow",
                 )
-                Tkd.hello()
+            )
 
-                print(
-                    color_text(
-                        f"\n [-] Please wait ....                       "
-                        + color_text(
-                            f"{(total_users - inc)} students / {total_users} students",
-                            "green",
-                        )
-                        + "\n",
-                        "yellow",
-                    )
-                )
+            progress.update((inc / total_users) * 100)
 
-                progress.update((inc / total_users) * 100)
-
-                await cards_report(user_id, status="completed")
+            await cards_report(user_id, status="completed")
 
             # Get content type
             content_type = response.headers.get("Content-Type", "image/jpeg")
@@ -1831,7 +1976,13 @@ async def async_image_url_to_base64(
             # Return as data URL
             return f"data:{content_type};base64,{image_base64}"
 
-    except asyncio.TimeoutError:
+    # The download is bounded twice: the aiohttp connect/read timeouts cap the
+    # socket, and the surrounding wait_for also caps the DNS lookup — which the
+    # ThreadedResolver runs in a thread that NO socket timeout can bound. If
+    # DNS stalls, the future is cancelled and the batch moves on.
+    try:
+        return await asyncio.wait_for(_fetch(), timeout=100)
+    except (asyncio.TimeoutError, asyncio.CancelledError):
         print(f"[*] Timeout fetching {image_url}")
         return None
     except aiohttp.ClientError as e:

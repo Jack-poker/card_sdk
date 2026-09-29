@@ -88,6 +88,9 @@ _OPEN_TAG = re.compile(r"<\s*(text)\b[^>]*?>")
 _ANCHOR = re.compile(r'data-format="\{([A-Za-z_][\w]*)\}"')
 _PLACEHOLDER = re.compile(r"\{([A-Za-z_][\w]*)\}")
 
+# Placeholder-doodle boxes, memoised per (document, element id) — see _doodle_box.
+_DOODLE_BOX_CACHE: dict = {}
+
 
 def _inner_text(block: str) -> str:
     """The visible run of a ``<text>`` block, tags removed."""
@@ -295,7 +298,21 @@ def _doodle_box(svg: str, elem_id: str):
     """``(x, y, w, h)`` of the drawn placeholder ``<path id=elem_id>`` — the
     template's own geometry, so an overlay lands exactly where the design
     draws the stamp / signature / logo. Falls back to ``None`` if not found.
+
+    Memoised on the document: walking a 200 KB placeholder path costs ~100 ms
+    and the answer only depends on the template file, while every card render
+    asks for the same three boxes.
     """
+    key = (elem_id, len(svg), hash(svg))
+    cached = _DOODLE_BOX_CACHE.get(key)
+    if cached is not None:
+        return cached[0]
+    box = _compute_doodle_box(svg, elem_id)
+    _DOODLE_BOX_CACHE[key] = (box,)
+    return box
+
+
+def _compute_doodle_box(svg: str, elem_id: str):
     m = re.search(
         r'<path\b[^>]*\bid="' + re.escape(elem_id) + r'"[^>]*?/?>', svg
     )
@@ -449,6 +466,45 @@ def check_template(template_name: str) -> list:
     return missing
 
 
+def _attach_demo_anchors(svg: str, slots: dict) -> str:
+    """Attach ``data-format="{var}"`` to every demo-locked ``<text>`` node.
+
+    One regex pass over the document, dispatching each node to its variable
+    through a demo-text lookup. Scanning once per *variable* (or rewriting each
+    block with ``str.replace``) copies the whole 200 KB template repeatedly and
+    was the single biggest cost of rendering a card. The open tag is the only
+    thing that changes, so it is rebuilt in place and every other byte is left
+    exactly as authored.
+    """
+    by_demo_text: dict = {}
+    for var, demos in slots.items():
+        for demo in demos:
+            by_demo_text.setdefault(demo, var)  # first var wins, as before
+    if not by_demo_text:
+        return svg
+
+    def _repl(m):
+        block = m.group(0)
+        text = _inner_text(block)
+        if not text:
+            return block
+        var = by_demo_text.get(text)
+        if not var:
+            return block  # not a demo slot
+        if _ANCHOR.search(block) or _PLACEHOLDER.search(block):
+            return block  # already wired: nothing to restore
+        open_m = _OPEN_TAG.match(block)
+        if not open_m:
+            return block
+        open_tag = open_m.group(0)
+        anchor = f' data-format="{{{var}}}"'
+        if anchor in open_tag:
+            return block
+        return open_tag[:-1] + anchor + ">" + block[len(open_tag):]
+
+    return _TEXT_NODE.sub(_repl, svg)
+
+
 def restore_svg_variables(svg: str, template_name: str, face: str = None) -> str:
     """In-memory, structure-preserving re-wiring of a template face.
 
@@ -470,19 +526,7 @@ def restore_svg_variables(svg: str, template_name: str, face: str = None) -> str
     """
     slots = DEMO_SLOTS.get(template_name, {})
     if slots:
-        for var, demos in slots.items():
-            for block in _TEXT_NODE.findall(svg) or []:
-                text = _inner_text(block)
-                if text not in demos or text == "":
-                    continue
-                if _ANCHOR.search(block) or _PLACEHOLDER.search(block):
-                    continue  # already wired: nothing to restore
-                open_tag = _OPEN_TAG.match(block).group(0)
-                anchor = f' data-format="{{{var}}}"'
-                if anchor in _strip_attrs(block):
-                    continue
-                new_open = open_tag[:-1] + anchor + ">"
-                svg = svg.replace(block, new_open + block[len(open_tag):], 1)
+        svg = _attach_demo_anchors(svg, slots)
     return _restore_image_slots_in_memory(svg, template_name, face)
 
 

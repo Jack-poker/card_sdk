@@ -19,9 +19,9 @@ from card_sdk.card import (
     image_file_to_base64,
     base64_qrcode,
     check_image_cache,
-    _decode_urlencoded_placeholders,
-    _img_href,
-    _safe_format,
+    _ensure_barcode_image,
+    build_card_fmt_args,
+    render_card_svgs,
     _sanitize_font_families,
     report_missing,
     get_print_cmyk,
@@ -29,6 +29,7 @@ from card_sdk.card import (
     convert_pdf_to_cmyk,
 )
 import asyncio
+import multiprocessing
 import time
 import aiohttp
 import subprocess
@@ -76,14 +77,19 @@ progress = Progress(
 
 
 async def total_users(data_url="https://api.v2.kaascan.com/admin/students") -> dict:
+    api_key = get_admin_api_key()
+    if not (api_key and api_key.isascii() and "\n" not in api_key and "\r" not in api_key):
+        print("[-] admin_api_key is missing or not plain ASCII — re-authorize first.")
+        return {}
     try:
         # Get user data
         response = requests.get(
             data_url,
             headers={
                 "accept": "application/json",
-                "X-API-KEY": get_admin_api_key(),
+                "X-API-KEY": api_key,
             },
+            timeout=(10, 60),
         )
 
         total_users = response.json()["count"]
@@ -99,7 +105,7 @@ async def total_users(data_url="https://api.v2.kaascan.com/admin/students") -> d
 async def get_csrftoken() -> str:
     try:
         fetch_csrftoken = requests.get(
-            "https://api.v2.kaascan.com/get-csrf-token"
+            "https://api.v2.kaascan.com/get-csrf-token", timeout=(10, 30)
         ).json()
 
         csrf_token = fetch_csrftoken["csrf_token"]
@@ -114,7 +120,9 @@ async def fetch_schools() -> list:
     try:
 
         fnd_schools = []
-        fetch_schools = requests.get("https://automation.kaascan.com/webhook/schools")
+        fetch_schools = requests.get(
+            "https://automation.kaascan.com/webhook/schools", timeout=(10, 30)
+        )
 
         schools = fetch_schools.json()[0]
 
@@ -146,45 +154,66 @@ def _prompt_yes_no(text: str) -> bool:
 
 
 # students
-async def fetch_userdata(data_url: str) -> dict:
-    try:
-        # Get user data
-        response = requests.get(
-            data_url,
-            headers={
-                "accept": "application/json",
-                "X-API-KEY": get_admin_api_key(),
-            },
-        )
-        user_data = response.json()["data"]
-        total_users = response.json()["count"]
+_PHOTO_CONCURRENCY = int(os.getenv("KAA_SCAN_PHOTO_CONCURRENCY", "32"))
 
-        # Process all students concurrently
-        connector = aiohttp.TCPConnector(resolver=aiohttp.ThreadedResolver())
-        async with aiohttp.ClientSession(connector=connector) as session:
-            tasks = []
-            inc = 0
-            for data in user_data:
 
-                Tkd.checking_task_progress(
-                    "Fetching users data", float(inc / (total_users / 100))
-                )
-                inc += 1
+async def _fetch_students_metadata(data_url: str) -> tuple:
+    """Fetch the student JSON records + total count (one bounded request)."""
+    api_key = get_admin_api_key()
+    if not (api_key and api_key.isascii() and "\n" not in api_key and "\r" not in api_key):
+        print("[*] admin_api_key is missing or not plain ASCII — FETCHING USER DATA FAILED. Re-authorize first.")
+        return [], 0
 
-                # Get the total number of users to make the process for::
+    response = requests.get(
+        data_url,
+        headers={
+            "accept": "application/json",
+            "X-API-KEY": api_key,
+        },
+        timeout=(10, 60),
+    )
+    payload = response.json()
+    users = payload.get("data") or []
+    return users, payload.get("count") or len(users)
 
-                # Create task for each student
-                task = process_student(session, data, inc)
-                tasks.append(task)
 
-            print(color_text(f"[>] Fetching users data Completed.", "green"))
-            # Execute all tasks at once
-            results = await asyncio.gather(*tasks, return_exceptions=True)
-            return results
+async def fetch_userdata_stream(users: list) -> Any:
+    """Download every student photo and yield each processed record the
+    moment its photo is ready (bounded concurrency).
 
-    except Exception as e:
-        print(f"[*] FETCHING USER DATA FAILED: {e}")
-        return []
+    multiple_cards() consumes this as an async iterator, so card rendering can
+    start on a finished photo while the rest of the batch is still downloading
+    — the CPU-bound render phase overlaps the I/O-bound download phase instead
+    of running strictly after it.
+    """
+    if not users:
+        return
+
+    connector = aiohttp.TCPConnector(resolver=aiohttp.ThreadedResolver())
+    sem = asyncio.Semaphore(max(1, min(_PHOTO_CONCURRENCY, len(users))))
+
+    async with aiohttp.ClientSession(connector=connector) as session:
+
+        async def _one(data, inc):
+            async with sem:
+                return await process_student(session, data, inc)
+
+        for future in asyncio.as_completed(
+            [_one(data, inc) for inc, data in enumerate(users, start=1)]
+        ):
+            try:
+                record = await future
+            except Exception as exc:
+                print(f"[*] student fetch failed: {exc}")
+                continue
+            if record and "student_photo" in record:
+                yield record
+
+
+async def fetch_userdata(data_url: str) -> list:
+    """Download all photos for *data_url* and return the processed records."""
+    users, _ = await _fetch_students_metadata(data_url)
+    return [record async for record in fetch_userdata_stream(users)]
 
 
 def create_classFolder(school_folder_name: str, folder_name: str):
@@ -239,7 +268,17 @@ async def process_student(session, data, count: int):
         # empty so a barcode-based card does not get a spurious QR (the batch
         # flow decides which to render).
         "data_qrcode": base64_qrcode(data["data_qrcode"]) if data.get("data_qrcode") else "",
-        "student_id": data["student_id"],
+        "student_id": data["student_code"],
+        # The admin API does not always carry the card/school fields. Copy the
+        # ones it does send through per student — multiple_cards() falls back to
+        # the run-wide values from the Student when a record leaves one out, so
+        # dropping them here would silently discard real per-student data.
+        "student_code": str(data.get("student_code") or data.get("code") or ""),
+        "valid_thru": str(data.get("valid_thru") or ""),
+        "school_type": str(data.get("school_type") or ""),
+        "slogan": str(data.get("slogan") or data.get("school_slogan") or ""),
+        "director_name": str(data.get("director_name") or ""),
+        "director_contact": str(data.get("director_contact") or ""),
     }
 
 
@@ -271,7 +310,10 @@ async def single_extract_base64_image(data):
         print(error)
 
 
-async def single_card(data: Student, stamp_base64: str = "", signature_base64: str = "", barcode_base64: str = "", school_logo_base64: str = "") -> str:
+async def single_card(data: Student, stamp_base64: str = "",
+                      signature_base64: str = "",
+                      barcode_base64: str = "",
+                      school_logo_base64: str = "") -> str:
 
     # A card that carries a barcode does not need a QR: leave data_qrcode as an
     # empty string / empty dict ("{}") to suppress the QR entirely.
@@ -297,6 +339,15 @@ async def single_card(data: Student, stamp_base64: str = "", signature_base64: s
         school_slogan=getattr(data, "slogan", "") or "",
         director_name=getattr(data, "director_name", "") or "",
         director_contact=getattr(data, "director_contact", "") or "",
+        school_name_font_size=getattr(data, "school_name_font_size", 0) or 0,
+        school_name_font_size_front=getattr(data, "school_name_font_size_front", None),
+        school_name_font_size_back=getattr(data, "school_name_font_size_back", None),
+        student_name_font_size=getattr(data, "student_name_font_size", 0) or 0,
+        student_name_font_size_front=getattr(data, "student_name_font_size_front", None),
+        student_name_font_size_back=getattr(data, "student_name_font_size_back", None),
+        student_class_font_size=getattr(data, "student_class_font_size", 0) or 0,
+        student_class_font_size_front=getattr(data, "student_class_font_size_front", None),
+        student_class_font_size_back=getattr(data, "student_class_font_size_back", None),
         side_2_color=getattr(data, "side_2_color", "") or "",
         color=getattr(data, "color", None),
         background_color=getattr(data, "background_color", None),
@@ -334,7 +385,10 @@ def _render_card_worker(args: dict) -> dict:
     import pymupdf
     from card_sdk._svg2pdf import svg2pdf_py
 
-    student_id = args.get("student_id", "card")
+    student_id = args.get("student_id", "card") or "card"
+    # Cards are named by the *student_code* (the card number); fall back to
+    # student_id only when no code was supplied.
+    card_code = str(args.get("student_code") or "").strip() or student_id
     try:
         font_db = svg2pdf_py.FontDatabase()
         font_db.load_font_file(f"{base_dir}/fonts/minigap.otf")
@@ -350,71 +404,63 @@ def _render_card_worker(args: dict) -> dict:
             font_db.load_font_file(f"{base_dir}/fonts/CreditCard-26Me.ttf")
         except Exception:
             pass
+        # Space Grotesk used by BANK_INSPIRE (Iyi paragraph, phone, support line).
+        # Without it those <text> elements are silently dropped, because
+        # _loaded_font_names already whitelists the family so the sanitizer does
+        # not fall back to another face.
+        try:
+            font_db.load_font_file(f"{base_dir}/fonts/SpaceGrotesk.otf")
+        except Exception:
+            pass
+        # Z003 used by RUNO SCHOOL CARD. Without it that <text> element is
+        # silently dropped, because _loaded_font_names whitelists the family so
+        # the sanitizer does not fall back to another face. Both bundled files
+        # are the same cut, so first one that loads wins.
+        for _z003 in ("Z003-MediumItalic.otf", "Z003-MediumItalic.ttf"):
+            try:
+                font_db.load_font_file(f"{base_dir}/fonts/{_z003}")
+                break
+            except Exception:
+                continue
     except Exception:
         font_db = svg2pdf_py.FontDatabase()
 
     try:
-        front_args = {
-            "color": "#0d0000",
-            "academic_year": "ACADEMIC YEAR",
-            "school_subtitle": "subtitle here",
-            "student_code": args.get("student_code", "") or "",
-            "valid_thru": args.get("valid_thru", "") or "09/30",
-            "school_type": args.get("school_type", "") or "HIGH SCHOOL",
-            "snFontsize": args.get("snFontsize", 2.4932),
-            "name": args["student_name"],
-            "student_names": args["student_name"],
-            "snx": args.get("snx", -10.523738),
-            "sny": args.get("sny", -0.8769781),
-            "Class": args["student_class"],
-            "student_class": args["student_class"],
-            "school_name": args["school_name"],
-            "school_slogan": args.get("school_slogan", "") or "",
-            "school_logo": _img_href(args.get("school_logo", "")),
-            "image_base64": _img_href(args.get("image_base64", "")),
-            "student_photo": _img_href(args.get("image_base64", "")),
-            "side_2_color": args.get("side_2_color", "#00897B"),
-            "data_qrcode": _img_href(args.get("data_qrcode", "")),
-            "stamp_base64": _img_href(args.get("stamp_base64", "")),
-            "student_barcode": _img_href(args.get("student_barcode", "")),
-            "signature_base64": _img_href(args.get("signature_base64", "")),
-            "director_name": args.get("director_name", "") or "",
-            "director_contact": args.get("director_contact", "") or "",
-        }
-        front = _safe_format(_decode_urlencoded_placeholders(open(
-            f"{base_dir}/templates/templates_base/{args['template_name']}/front.card.kaascan",
-            encoding="utf-8",
-        ).read()), front_args)
+        student_barcode = _ensure_barcode_image(
+            args.get("student_code", ""), args.get("student_barcode", "")
+        )
+        fmt_args = build_card_fmt_args(
+            student_name=args["student_name"],
+            student_class=args["student_class"],
+            school_name=args["school_name"],
+            student_id=student_id,
+            student_code=args.get("student_code", ""),
+            valid_thru=args.get("valid_thru", ""),
+            school_type=args.get("school_type", ""),
+            school_slogan=args.get("school_slogan", ""),
+            school_logo=args.get("school_logo", ""),
+            image_base64=args.get("image_base64", ""),
+            side_2_color=args.get("side_2_color", ""),
+            data_qrcode=args.get("data_qrcode", ""),
+            stamp_base64=args.get("stamp_base64", ""),
+            student_barcode=student_barcode,
+            signature_base64=args.get("signature_base64", ""),
+            director_name=args.get("director_name", ""),
+            director_contact=args.get("director_contact", ""),
+            school_name_font_size=args.get("school_name_font_size", 0) or 0,
+            school_name_font_size_front=args.get("school_name_font_size_front", None),
+            school_name_font_size_back=args.get("school_name_font_size_back", None),
+            student_name_font_size=args.get("student_name_font_size", 0) or 0,
+            student_name_font_size_front=args.get("student_name_font_size_front", None),
+            student_name_font_size_back=args.get("student_name_font_size_back", None),
+            student_class_font_size=args.get("student_class_font_size", 0) or 0,
+            student_class_font_size_front=args.get("student_class_font_size_front", None),
+            student_class_font_size_back=args.get("student_class_font_size_back", None),
+        )
+        faces = render_card_svgs(args["template_name"], fmt_args)
+        front, back = faces["front"], faces["back"]
     except Exception as exc:
-        return {"student_id": student_id, "ok": False, "error": f"front fill: {exc}"}
-    try:
-        back_args = {
-            "data_qrcode": _img_href(args.get("data_qrcode", "")),
-            "student_code": args.get("student_code", "") or "",
-            "valid_thru": args.get("valid_thru", "") or "09/30",
-            "school_type": args.get("school_type", "") or "HIGH SCHOOL",
-            "student_barcode": _img_href(args.get("student_barcode", "")),
-            "student_photo": _img_href(args.get("image_base64", "")),
-            "snFontsize": args.get("snFontsize", 2.4932),
-            "student_name": args["student_name"],
-            "snx": args.get("snx", -10.523738),
-            "sny": args.get("sny", -0.8769781),
-            "student_class": args["student_class"],
-            "school_name": args["school_name"],
-            "school_slogan": args.get("school_slogan", "") or "",
-            "school_logo": _img_href(args.get("school_logo", "")),
-            "image_base64": _img_href(args.get("image_base64", "")),
-            "name": args["student_name"],
-            "Class": args["student_class"],
-            "director_name": args.get("director_name", "") or "",
-            "director_contact": args.get("director_contact", "") or "",
-        }
-        back = _safe_format(_decode_urlencoded_placeholders(open(
-            f"{base_dir}/templates/templates_base/{args['template_name']}/back.card.kaascan",
-            encoding="utf-8",
-        ).read()), back_args)
-    except Exception as exc:
-        return {"student_id": student_id, "ok": False, "error": f"back fill: {exc}"}
+        return {"student_id": card_code, "ok": False, "error": f"fill: {exc}"}
 
     # Per-role color overrides, applied identically to generate_card(): back side
     # follows side_2_color, other roles (primary/background/accent) cover both.
@@ -443,13 +489,13 @@ def _render_card_worker(args: dict) -> dict:
     # carries a barcode does not need QR data, so skip that check when a
     # barcode is present.
     try:
-        _has_barcode = args.get("student_barcode") and str(args.get("student_barcode", "")).strip()
+        _has_barcode = bool(student_barcode and str(student_barcode).strip())
         _missing = [
             name
             for name, raw in (
                 ("stamp_base64", args.get("stamp_base64")),
                 ("signature_base64", args.get("signature_base64")),
-                ("student_barcode", args.get("student_barcode")),
+                ("student_barcode", student_barcode),
                 ("school_logo", args.get("school_logo")),
                 ("data_qrcode", args.get("data_qrcode")),
                 ("image_base64", args.get("image_base64")),
@@ -459,7 +505,7 @@ def _render_card_worker(args: dict) -> dict:
         ]
         if _missing:
             report_missing(
-                card_id=student_id,
+                card_id=card_code,
                 school_name=args.get("school_name", ""),
                 student_class=args.get("student_class", ""),
                 missing=_missing,
@@ -473,14 +519,14 @@ def _render_card_worker(args: dict) -> dict:
         / args["student_class"]
     )
     out_dir.mkdir(parents=True, exist_ok=True)
-    out_pdf = out_dir / f"final_student_card_{student_id}.pdf"
+    out_pdf = out_dir / f"final_student_card_{card_code}.pdf"
 
     try:
         front = _sanitize_font_families(front)
         back = _sanitize_font_families(back)
         pdf_pages = svg2pdf_py.svg_pages_to_pdfs([front, back], font_db)
         if not pdf_pages:
-            print(f":: warning: svg-to-pdf produced no pages for {student_id}")
+            print(f":: warning: svg-to-pdf produced no pages for {card_code}")
         doc = pymupdf.open()
         for pb in pdf_pages:
             part = pymupdf.open("pdf", pb)
@@ -491,56 +537,191 @@ def _render_card_worker(args: dict) -> dict:
         if args.get("print_cmyk", get_print_cmyk()):
             convert_pdf_to_cmyk(str(out_pdf))
     except Exception as exc:
-        return {"student_id": student_id, "ok": False, "error": f"render: {exc}", "out": str(out_pdf)}
-    return {"student_id": student_id, "ok": True, "out": str(out_pdf)}
+        return {"student_id": card_code, "ok": False, "error": f"render: {exc}", "out": str(out_pdf)}
+    return {"student_id": card_code, "ok": True, "out": str(out_pdf)}
+
+
+_RENDER_SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+_RENDER_QUIPS = (
+    "summoning the card designer...",
+    "haggling with the printer daemon...",
+    "convincing svg2pdf that ink is not lazy...",
+    "chasing stray pixels back into place...",
+    "reminding the barcode to keep stock-still...",
+    "polishing the laminate shine...",
+    "waking up the document scanners...",
+    "measuring widths in millimeters...",
+    "signing autographs on the backface...",
+    "double-checking nobody moved a textbox...",
+)
+
+
+async def _drive_render(
+    futures: set, results: list, total: int, producer_done: asyncio.Event
+) -> None:
+    """Animated realtime card-render progress.
+
+    One self-updating console line: spinner + rotating quip + progress bar. The
+    producer keeps adding render futures to *futures* as photos finish
+    downloading; once *producer_done* is set and every submitted future has
+    finished, the loop ends.
+    """
+    if total <= 0:
+        return
+    spin = _RENDER_SPINNER
+    quips = _RENDER_QUIPS
+    done = 0
+    i = 0
+    while True:
+        waiting = {f for f in futures if not f.done()}
+        if waiting:
+            _finished, _ = await asyncio.wait(
+                waiting, timeout=0.12, return_when=asyncio.FIRST_COMPLETED
+            )
+        else:
+            _finished = set()
+            await asyncio.wait(
+                {asyncio.ensure_future(producer_done.wait())}, timeout=0.12
+            )
+        for fut in _finished:
+            try:
+                results.append(await fut)
+            except Exception as exc:
+                results.append({"student_id": "?", "ok": False, "error": str(exc)})
+            done += 1
+        i += 1
+        frame = spin[i % len(spin)]
+        quip = quips[(i // len(spin)) % len(quips)]
+        filled = int(round(36 * done / max(1, total)))
+        filled = max(0, min(36, filled))
+        bar = "█" * filled + "░" * (36 - filled)
+        phase = (
+            "Finalizing"
+            if producer_done.is_set()
+            else "Downloading & rendering"
+        )
+        print(
+            f"\r{frame} {phase} ... {done}/{total} [{bar}] {quip}",
+            end="",
+            flush=True,
+        )
+        if producer_done.is_set() and all(f.done() for f in futures):
+            print()
+            return
 
 
 async def multiple_cards(
     template_name: str, data_url="https://api.v2.kaascan.com/admin/students",
     stamp_base64: str = "", signature_base64: str = "", barcode_base64: str = "", school_logo_base64: str = "",
     color=None, side_2_color="#00897B", background_color=None, accent_color=None, color_overrides=None, colors=None,
+    student_code: str = "", valid_thru: str = "09/30", school_type: str = "HIGH SCHOOL",
+    school_slogan: str = "", director_name: str = "", director_contact: str = "",
+    school_name_font_size: float = 0.0,  # mm +/- school-name font delta (0 = authored)
+    school_name_font_size_front=None, school_name_font_size_back=None,
+    student_name_font_size: float = 0.0,  # mm +/- student-name font delta (0 = authored)
+    student_name_font_size_front=None, student_name_font_size_back=None,
+    student_class_font_size: float = 0.0,  # mm +/- grade font delta (0 = authored)
+    student_class_font_size_front=None, student_class_font_size_back=None,
 ):
-    # Fetch users data (photos downloaded concurrently via aiohttp)
-    user_data = await fetch_userdata(data_url)
-    if not user_data:
+    # Metadata fetch is a single bounded request; photos download and cards
+    # render as an overlapped pipeline, so the CPU-bound render phase hides
+    # behind the I/O-bound download phase.
+    users, total = await _fetch_students_metadata(data_url)
+    if not users:
         return []
 
-    tasks = []
     # A card that carries a barcode does not need a QR — drop any QR data that
     # was pre-generated so the QR placeholder stays empty on barcode cards.
     suppress_qr = bool(barcode_base64 and str(barcode_base64).strip())
-    for data in user_data:
-        if not data or "student_photo" not in data:
-            continue
-        student_id = data.get("student_id", "")
-        tasks.append(
-            {
-                "template_name": template_name,
-                "output_dir": str(get_output_dir()),
-                "print_cmyk": bool(get_print_cmyk()),
-                "color": color,
-                "side_2_color": side_2_color,
-                "background_color": background_color,
-                "accent_color": accent_color,
-                "color_overrides": color_overrides,
-                "colors": colors,
-                "image_base64": data["student_photo"],
-                "student_name": data.get("student_name", ""),
-                "student_class": data.get("student_class", ""),
-                "school_name": data.get("school_name", ""),
-                "student_id": student_id,
-                "data_qrcode": "" if suppress_qr else data.get("data_qrcode", ""),
-                "stamp_base64": stamp_base64,
-                "student_barcode": barcode_base64,
-                "signature_base64": signature_base64,
-                "school_logo": school_logo_base64,
-                "school_slogan": data.get("slogan", "") or "",
-            }
-        )
 
-    workers = max(1, min(os.cpu_count() or 1, 8))
-    with ProcessPoolExecutor(max_workers=workers) as pool:
-        results = list(pool.map(_render_card_worker, tasks, chunksize=1))
+    print(
+        color_text(
+            f"[>] Downloading & rendering {len(users)} student card(s) "
+            "(bounded photo downloads, overlapped with CPU render) ...",
+            "cyan",
+        ),
+        flush=True,
+    )
+
+    def build_render_task(record: dict, student_id: str) -> dict:
+        """A per-student record value wins; the run-wide value fills the gap."""
+        def _pick(key, fallback):
+            value = str(record.get(key) or "").strip()
+            return value or fallback
+
+        return {
+            "template_name": template_name,
+            "output_dir": str(get_output_dir()),
+            "print_cmyk": bool(get_print_cmyk()),
+            "color": color,
+            "side_2_color": side_2_color,
+            "background_color": background_color,
+            "accent_color": accent_color,
+            "color_overrides": color_overrides,
+            "colors": colors,
+            "image_base64": record["student_photo"],
+            "student_name": record.get("student_name", ""),
+            "student_class": record.get("student_class", ""),
+            "school_name": record.get("school_name", ""),
+            "student_id": student_id,
+            "data_qrcode": "" if suppress_qr else record.get("data_qrcode", ""),
+            "stamp_base64": stamp_base64,
+            "student_barcode": barcode_base64,
+            "signature_base64": signature_base64,
+            "school_logo": school_logo_base64,
+            "student_code": _pick("student_code", student_code),
+            "valid_thru": _pick("valid_thru", valid_thru),
+            "school_type": _pick("school_type", school_type),
+            "school_slogan": _pick("slogan", school_slogan),
+            "director_name": _pick("director_name", director_name),
+            "director_contact": _pick("director_contact", director_contact),
+            "school_name_font_size": school_name_font_size,
+            "school_name_font_size_front": school_name_font_size_front,
+            "school_name_font_size_back": school_name_font_size_back,
+            "student_name_font_size": student_name_font_size,
+            "student_name_font_size_front": student_name_font_size_front,
+            "student_name_font_size_back": student_name_font_size_back,
+            "student_class_font_size": student_class_font_size,
+            "student_class_font_size_front": student_class_font_size_front,
+            "student_class_font_size_back": student_class_font_size_back,
+        }
+
+    workers = max(
+        1, min(int(os.getenv("KAA_SCAN_MAX_WORKERS", "8")), os.cpu_count() or 1)
+    )
+    # Spawn, never fork: the parent's event loop already owns aiohttp threads
+    # (ThreadedResolver) by this point, and forking a process that has live
+    # threads inherits locked mutexes — a child renderer then deadlocks forever
+    # and the batch freezes at the last printed line.
+    _mp_ctx = multiprocessing.get_context("spawn")
+    with ProcessPoolExecutor(max_workers=workers, mp_context=_mp_ctx) as pool:
+        loop = asyncio.get_running_loop()
+        pending: set = set()
+        results: list = []
+        producer_done = asyncio.Event()
+
+        # Submit every render the instant its photo is ready (NOT pool.map,
+        # which yields in input order and stalls the display on the slowest
+        # prefix). _drive_render owns a single animated line.
+        async def _produce():
+            try:
+                async for record in fetch_userdata_stream(users):
+                    if not record or "student_photo" not in record:
+                        continue
+                    student_id = record.get("student_id", "")
+                    pending.add(
+                        loop.run_in_executor(
+                            pool,
+                            _render_card_worker,
+                            build_render_task(record, student_id),
+                        )
+                    )
+            finally:
+                producer_done.set()
+
+        producer_task = asyncio.create_task(_produce())
+        await _drive_render(pending, results, total, producer_done)
+        await producer_task
 
     ok = [r for r in results if r.get("ok")]
     failed = [r for r in results if not r.get("ok")]
@@ -557,6 +738,7 @@ def create_output_Folder():
 
 class Card:
 
+    @staticmethod
     async def authorize_api_user():
         """QR-code handshake: wait for the WS to POST a valid ``admin_api_key``.
 
@@ -611,7 +793,39 @@ class Card:
         print(color_text("\n  [✓] API user authorized — card generation unlocked.\n", "green"))
         return api_key
 
-    async def agent(data=None, print_cmyk: Optional[bool] = None):
+    @staticmethod
+    async def agent(
+        data: Optional[Student] = None,
+        print_cmyk: Optional[bool] = None,
+        multiple: bool = False,
+        template_name: Optional[str] = None,
+    ):
+        """Generate one card, or a whole batch.
+
+        Args:
+            data: the student to render. Optional — only needed to carry the
+                template and the colour choices into MULTIPLE mode, where the
+                students themselves come from the Kaascan admin API.
+            print_cmyk: per-run CMYK toggle. ``None`` leaves the current
+                setting (and ``KAA_PRINT_CMYK``) alone.
+            multiple: opt into MULTIPLE (batch) generation without going
+                through the interactive menu. The default ``False`` keeps the
+                historical behaviour: with ``data`` given, render exactly one
+                card; without it, show the CLI cockpit.
+            template_name: template for batch generation. Falls back to
+                ``data.template_name``, then to the interactive picker. An
+                explicit value always wins, so a batch run never blocks on a
+                prompt. Has no effect in SINGLE mode, which always uses
+                ``data.template_name``.
+
+        Returns:
+            SINGLE mode: whatever ``single_card`` returns. MULTIPLE mode: the
+            list of successful worker results.
+
+        MULTIPLE mode reads the admin API, so it authorizes the API user first
+        (a no-op when ``KAA_SCAN_API_KEY`` is already set). SINGLE mode never
+        touches the admin API and needs no key.
+        """
         # create output folder
         create_output_Folder()
 
@@ -648,36 +862,47 @@ class Card:
 
         Tkd.hello()
 
-        # Data is already in hand — nothing to ask, go straight to SINGLE-page
-        # generation. Interactive menus are only used for the no-data CLI cockpit.
-        if data is not None:
+        # A caller that asked for MULTIPLE has already chosen the mode, so the
+        # interactive menu is skipped entirely.
+        batch = bool(multiple)
+
+        # Data is already in hand and SINGLE was not overridden — nothing to ask,
+        # go straight to SINGLE-page generation. Interactive menus are only used
+        # for the no-data CLI cockpit.
+
+
+        if data is not None and not batch:
             clear_report_file()
-            await single_card(data)
-            return
+            return await single_card(data)
 
-        # Optional: start the web UI so templates can be viewed over HTTP.
-        if _prompt_yes_no(color_text("Start the web server to view templates?", "blue")):
-            Tkd.inform_user("Starting web server ... (press Ctrl+C to stop)")
-            from card_sdk.web_server import serve_web_async
+        mode: str = "MULTIPLE" if batch else ""
+        template: str = template_name or ""
 
-            await serve_web_async()
-            return
 
-        try:
-            schools = await fetch_schools()
 
-            school = _prompt_choice("Choose school: ", schools)
+        if not batch:
+            # Optional: start the web UI so templates can be viewed over HTTP.
+            if _prompt_yes_no(color_text("Start the web server to view templates?", "blue")):
+                Tkd.inform_user("Starting web server ... (press Ctrl+C to stop)")
+                from card_sdk.web_server import serve_web_async
 
-            modes = ["SINGLE", "MULTIPLE"]
+                await serve_web_async()
+                return
 
-            mode: str = _prompt_choice("Choose generating mode: ", modes)
+            try:
+                modes = ["SINGLE", "MULTIPLE"]
+                mode: str = _prompt_choice("Choose generating mode: ", modes)
+            except (EOFError, KeyboardInterrupt, AttributeError):
+                mode = "SINGLE"
 
-            template: str = _prompt_choice("Choose Template", pull_template_options())
-        except (EOFError, KeyboardInterrupt, AttributeError):
-            school, mode, template = "", "SINGLE", ""
+        # School + template pickers intentionally appear *after* authentication
+        # (in the MULTIPLE branch below), so a freshly authorized session offers
+        # the real choices.
 
         # Clear the report file
         clear_report_file()
+        
+
 
         try:
 
@@ -686,23 +911,60 @@ class Card:
             if mode.lower() == "single" and data != None:
 
                 singleCard_result = await single_card(data)
+                return singleCard_result
 
             if mode.lower() == "multiple":
                 # MULTIPLE mode pulls students from the Kaascan admin API, so
                 # the API user key is required here — SINGLE mode never touches
-                # the admin API and needs no key.
+                # the admin API and needs no key. Authenticate first; then the
+                # interactive steps (choose school, choose template) appear.
                 await Card.authorize_api_user()
+
+                # Interactive steps appear right after authenticating, so the
+                # freshly authorized session offers the real choices. Batch runs
+                # accept the template carried by `data` without blocking on a
+                # prompt; interactive runs get the pickers.
+                if not batch:
+                    try:
+                        schools = await fetch_schools()
+                        school = _prompt_choice("Choose school: ", schools)
+                    except (EOFError, KeyboardInterrupt, AttributeError):
+                        school = ""
+                if not template:
+                    template = (getattr(data, "template_name", None) or "") if batch else ""
+                    if not template:
+                        template = _prompt_choice("Choose Template", pull_template_options())
+
                 # get total users number
                 await total_users()
-                multipleCards = await multiple_cards(
-                template,
-                color=getattr(data, "color", None) if data else None,
-                side_2_color=getattr(data, "side_2_color", "#00897B") if data else "#00897B",
-                background_color=getattr(data, "background_color", None) if data else None,
-                accent_color=getattr(data, "accent_color", None) if data else None,
-                color_overrides=getattr(data, "color_overrides", None) if data else None,
-                colors=getattr(data, "colors", None) if data else None,
-            )
+                # The per-run assets live on the Student, exactly as in
+                # single_card, so a batch run uses the same stamp/signature/
+                # barcode/logo as the single-card path. Explicit arguments win.
+                # The school-level card fields (card number, validity, school
+                # type, slogan, director) come along too: the admin API only
+                # supplies name/class/photo/id, so without these a batch card
+                # fell back to the template's demo text.
+                return await multiple_cards(
+                    template,
+                    stamp_base64=getattr(data, "stamp", None) or "",
+                    signature_base64=getattr(data, "signature", None) or "",
+                    barcode_base64=getattr(data, "barcode", None) or "",
+                    school_logo_base64=getattr(data, "school_logo", None) or "",
+                    color=getattr(data, "color", None) if data else None,
+                    side_2_color=getattr(data, "side_2_color", "#00897B") if data else "#00897B",
+                    background_color=getattr(data, "background_color", None) if data else None,
+                    accent_color=getattr(data, "accent_color", None) if data else None,
+                    color_overrides=getattr(data, "color_overrides", None) if data else None,
+                    colors=getattr(data, "colors", None) if data else None,
+                    student_code=getattr(data, "student_code", "") or "",
+                    valid_thru=getattr(data, "valid_thru", "") or "09/30",
+                    school_type=getattr(data, "school_type", "") or "HIGH SCHOOL",
+                    school_slogan=getattr(data, "slogan", "") or "",
+                    director_name=getattr(data, "director_name", "") or "",
+                    director_contact=getattr(data, "director_contact", "") or "",
+                )
+
+            return None
 
         except KeyError as error:
             raise RuntimeError("byee")

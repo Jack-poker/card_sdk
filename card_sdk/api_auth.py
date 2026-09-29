@@ -84,12 +84,23 @@ def get_admin_api_key() -> str:
 
 def require_admin_api_key() -> bool:
     """True when a usable (authorized-or-env) admin API key is available."""
-    return bool(get_admin_api_key())
+    return _key_usable(get_admin_api_key())
 
 
 # ---------------------------------------------------------------------------
 # Validation against the real Kaascan admin API
 # ---------------------------------------------------------------------------
+
+def _key_usable(key: str) -> bool:
+    """A usable key is non-empty plain ASCII without embedded newlines.
+
+    HTTP headers can only carry ASCII/latin-1, so a key with non-ASCII
+    characters (e.g. a corrupted paste or a stray emoji) can never be sent —
+    requests/urllib would crash encoding it instead of failing cleanly.
+    """
+    key = (key or "").strip()
+    return bool(key) and key.isascii() and "\r" not in key and "\n" not in key
+
 
 def validate_admin_api_key(key: str) -> bool:
     """Probe the Kaascan admin API with ``key``; True when it is accepted.
@@ -103,6 +114,14 @@ def validate_admin_api_key(key: str) -> bool:
     """
     key = (key or "").strip()
     if not key:
+        return False
+    if not _key_usable(key):
+        print(
+            "  [!] admin_api_key must be plain ASCII — the pasted key contains\n"
+            "      non-ASCII characters and cannot be sent over HTTP.\n"
+            "      Please re-authorize with a valid key.",
+            flush=True,
+        )
         return False
     try:
         req = urllib.request.Request(

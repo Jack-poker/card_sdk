@@ -260,12 +260,40 @@ Pass `None` / omit a role and the template's own color is kept — so
 `Card.agent()` then pulls the student list for a school from the Kaascan admin
 API and renders cards with process pooling. Because it calls the admin API,
 **MULTIPLE mode requires the API user key** (`KAA_SCAN_API_KEY` or the QR
-handshake):
+handshake).
+
+Pass `multiple=True` to opt into batch generation directly — no interactive
+menu, so it is safe in a notebook or script:
 
 ```python
 import asyncio
 from card_sdk.card_agent import Card
 
+# batch, no prompts at all
+asyncio.run(Card.agent(data=config.to_student(), multiple=True))
+
+# batch without a Student: colors fall back to defaults, template is explicit
+asyncio.run(Card.agent(multiple=True, template_name="BANK_INSPIRE"))
+
+# + CMYK print colors
+asyncio.run(Card.agent(data=config.to_student(), multiple=True, print_cmyk=True))
+```
+
+| argument | effect |
+| --- | --- |
+| `multiple=False` (default) | with `data`: one card. without `data`: the CLI cockpit menu. |
+| `multiple=True` | batch from the admin API. Skips every prompt. `data` is optional and only supplies the template and colors. |
+| `template_name=…` | template for the batch. Falls back to `data.template_name`, then the picker. An explicit value always wins, so a batch run never blocks. |
+
+Stamp, signature, barcode, school logo **and every card variable** — card
+number, `valid_thru`, `school_type`, `slogan`, `director_name`,
+`director_contact`, plus the colors — are read off the `Student` exactly as in
+SINGLE mode. The admin API only supplies name / class / photo / id, so anything
+it leaves out falls back to the `Student`; a field the API *does* send for a
+student wins over the run-wide value. The return value is the list of
+successful worker results (`SINGLE` mode returns `single_card`'s result).
+
+```python
 asyncio.run(Card.agent(data=config.to_student()))            # SINGLE → MULTIPLE prompt
 asyncio.run(Card.agent(data=config.to_student(), print_cmyk=True))  # + CMYK print colors
 # or interactive:  asyncio.run(Card.agent())
