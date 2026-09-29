@@ -1,6 +1,7 @@
 import json
 import os
 import pathlib
+import sys
 
 from typing import Dict, Optional, Any
 
@@ -640,6 +641,7 @@ async def _drive_render(
 
 async def multiple_cards(
     template_name: str, data_url="https://api.v2.kaascan.com/admin/students",
+    school: str = "",
     stamp_base64: str = "", signature_base64: str = "", barcode_base64: str = "", school_logo_base64: str = "",
     color=None, side_2_color="#00897B", background_color=None, accent_color=None, color_overrides=None, colors=None,
     student_code: str = "", valid_thru: str = "09/30", school_type: str = "HIGH SCHOOL",
@@ -654,7 +656,18 @@ async def multiple_cards(
     # Metadata fetch is a single bounded request; photos download and cards
     # render as an overlapped pipeline, so the CPU-bound render phase hides
     # behind the I/O-bound download phase.
-    users, total = await _fetch_students_metadata(data_url)
+    users, _ = await _fetch_students_metadata(data_url)
+    # The school picker filters the fetched records client-side, exactly like
+    # the web server: only students whose school_name matches the choice
+    # proceed (case-insensitive). Empty choice = no filter.
+    want_school = (school or "").strip().lower()
+    if want_school:
+        users = [
+            u
+            for u in users
+            if (u.get("school_name") or "").strip().lower() == want_school
+        ]
+    total = len(users)
     if not users:
         return []
 
@@ -949,17 +962,21 @@ class Card:
                 await Card.authorize_api_user()
 
                 # Interactive steps appear right after authenticating, so the
-                # freshly authorized session offers the real choices. Batch runs
-                # accept the template carried by `data` without blocking on a
-                # prompt; interactive runs get the pickers.
-                if not batch:
+                # freshly authorized session offers the real choices. A caller
+                # that opted into MULTIPLE from a terminal still sees the
+                # pickers; only a headless batch (notebook / script, no TTY)
+                # skips them and carries the values through `data`.
+                interactive_cli = bool(sys.stdin and sys.stdin.isatty())
+                school = ""
+                if not batch or interactive_cli:
                     try:
                         schools = await fetch_schools()
                         school = _prompt_choice("Choose school: ", schools)
                     except (EOFError, KeyboardInterrupt, AttributeError):
                         school = ""
                 if not template:
-                    template = (getattr(data, "template_name", None) or "") if batch else ""
+                    if not interactive_cli and batch:
+                        template = getattr(data, "template_name", None) or ""
                     if not template:
                         template = _prompt_choice("Choose Template", pull_template_options())
 
@@ -974,6 +991,7 @@ class Card:
                 # fell back to the template's demo text.
                 return await multiple_cards(
                     template,
+                    school=school,
                     stamp_base64=getattr(data, "stamp", None) or "",
                     signature_base64=getattr(data, "signature", None) or "",
                     barcode_base64=getattr(data, "barcode", None) or "",
