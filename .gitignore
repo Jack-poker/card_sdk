@@ -22,6 +22,11 @@ env/
 .flet/
 *.swp
 
+# Local scratch / alignment tooling (never pushed)
+ALIGNMENT_REPORT.txt
+cmp_tpl.py
+samples/
+
 # Runtime-generated (card output & reports are byproducts, not source)
 output/
 card_sdk/output/

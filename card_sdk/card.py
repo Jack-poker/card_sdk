@@ -1097,13 +1097,13 @@ def save_card(card_content: dict, card_id: str, class_folder: str, school_name: 
     # in-memory copy handed to the PDF renderer carries the point-valued
     # root size (see _restore_root_size_mm). It is also pretty-printed so it
     # reads well in an editor (one-line SVGs defeat highlighting/preview).
-    with open(f"{base_dir}/svg_outputs/front_{card_id}_svg_template.svg","w+") as svg_file:
-        svg_file.write(_pretty_svg(_restore_root_size_mm(front_card, card_templates["front"]["card"])))
+    # with open(f"{base_dir}/svg_outputs/front_{card_id}_svg_template.svg","w+") as svg_file:
+    #     svg_file.write(_pretty_svg(_restore_root_size_mm(front_card, card_templates["front"]["card"])))
 
-    with open(f"{base_dir}/svg_outputs/back_{card_id}_svg_template.svg","w+") as svg_file:
-        svg_file.write(_pretty_svg(_restore_root_size_mm(back_card, card_templates["back"]["card"])))
+    # with open(f"{base_dir}/svg_outputs/back_{card_id}_svg_template.svg","w+") as svg_file:
+    #     svg_file.write(_pretty_svg(_restore_root_size_mm(back_card, card_templates["back"]["card"])))
 
-    print(f"svg output: {front_card}")
+    # print(f"svg output: {front_card}")
     try:
         pdf_pages = svg2pdf_py.svg_pages_to_pdfs([front_card, back_card], svg)
     except Exception as error:
