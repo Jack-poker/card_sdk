@@ -1464,19 +1464,20 @@ def _resolve_color_overrides(template_name: str, *, color, background_color, acc
 
 
 def _ensure_barcode_image(student_code, student_barcode):
-    """The barcode always carries the *digits* of the student code.
+    """The barcode on the card's back always carries the *digits* of the
+    student code (the card number) as an integer.
 
-    Never a UUID or a raw id. If no real barcode image was supplied (or the
-    supplied one looks like a UUID, which its dashes betray), generate it here
-    from the student code so the card never shows a non-digit value.
+    A supplied barcode image only ever wins when no student code exists: the
+    student_code's digits take precedence so the rendered barcode matches the
+    printed card number, never a UUID, an id, or a stale image.
     """
-    if student_barcode and str(student_barcode).strip() and "-" not in student_barcode:
-        return student_barcode
-    from card_sdk.base64qrcode import base64_barcode
-
     _digits = re.sub(r"[^0-9]", "", str(student_code or ""))
     if _digits:
+        from card_sdk.base64qrcode import base64_barcode
+
         return base64_barcode({"code": _digits})
+    if student_barcode and str(student_barcode).strip() and "-" not in student_barcode:
+        return student_barcode
     return student_barcode
 
 
