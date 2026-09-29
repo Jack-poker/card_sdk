@@ -259,6 +259,34 @@ async def process_student(session, data, count: int):
     # os.system("clear")
     # print(progress.update(prg))
 
+    # The card number comes straight from the fetched record (student_code /
+    # code / card_number / card_no) — the back barcode AND the QR both encode
+    # these digits, so scanning any card returns THAT student's code, never a
+    # run-wide or constant value.
+    fetched_code = str(
+        data.get("student_code")
+        or data.get("code")
+        or data.get("card_number")
+        or data.get("card_no")
+        or ""
+    ).strip()
+
+    # The QR payload is per-student: whatever the admin API sends for this
+    # student is copied through, and the fetched student_code is injected as
+    # both ``code`` and ``student_code`` so a scan always resolves to the
+    # printed card number.
+    raw_qr = data.get("data_qrcode")
+    qr_payload = raw_qr if isinstance(raw_qr, dict) else {}
+    if isinstance(raw_qr, str) and raw_qr.strip():
+        try:
+            qr_payload = json.loads(raw_qr)
+        except Exception:
+            qr_payload = {}
+    if fetched_code:
+        qr_payload = dict(qr_payload or {})
+        qr_payload["student_code"] = fetched_code
+        qr_payload["code"] = fetched_code
+
     return {
         "student_photo": await extract_base64_image(session, data, count),
         "student_name": data["student_name"],
@@ -267,13 +295,13 @@ async def process_student(session, data, count: int):
         # Respect an explicit QR payload from the source; otherwise leave it
         # empty so a barcode-based card does not get a spurious QR (the batch
         # flow decides which to render).
-        "data_qrcode": base64_qrcode(data["data_qrcode"]) if data.get("data_qrcode") else "",
-        "student_id": data["student_code"],
+        "data_qrcode": base64_qrcode(qr_payload) if qr_payload else "",
+        "student_id": fetched_code or data.get("student_id", ""),
         # The admin API does not always carry the card/school fields. Copy the
         # ones it does send through per student — multiple_cards() falls back to
         # the run-wide values from the Student when a record leaves one out, so
         # dropping them here would silently discard real per-student data.
-        "student_code": str(data.get("student_code") or data.get("code") or ""),
+        "student_code": fetched_code,
         "valid_thru": str(data.get("valid_thru") or ""),
         "school_type": str(data.get("school_type") or ""),
         "slogan": str(data.get("slogan") or data.get("school_slogan") or ""),
