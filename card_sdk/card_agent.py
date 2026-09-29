@@ -1,6 +1,7 @@
 import json
 import os
 import pathlib
+import re
 import sys
 
 from typing import Dict, Optional, Any
@@ -263,14 +264,29 @@ async def process_student(session, data, count: int):
     # The card number comes straight from the fetched record (student_code /
     # code / card_number / card_no) — the back barcode AND the QR both encode
     # these digits, so scanning any card returns THAT student's code, never a
-    # run-wide or constant value.
-    fetched_code = str(
-        data.get("student_code")
-        or data.get("code")
-        or data.get("card_number")
-        or data.get("card_no")
-        or ""
-    ).strip()
+    # run-wide or constant value. If a record leaves every code field blank but
+    # its student_id is purely numeric (a card number, not a UUID), that is
+    # used instead so nothing silently falls back to the un-printable id.
+    fetched_code = ""
+    for _code_field in (
+        "student_code",
+        "code",
+        "card_number",
+        "card_no",
+        "CardNumber",
+        "CardNo",
+    ):
+        _candidate = data.get(_code_field)
+        if _candidate is None:
+            continue
+        _candidate = str(_candidate).strip()
+        if isinstance(_candidate, str) and _candidate:
+            fetched_code = _candidate
+            break
+    if not fetched_code:
+        _raw_id = str(data.get("student_id") or data.get("id") or "").strip()
+        if _raw_id and re.fullmatch(r"\d+", _raw_id):
+            fetched_code = _raw_id
 
     # The QR payload is per-student: whatever the admin API sends for this
     # student is copied through, and the fetched student_code is injected as
